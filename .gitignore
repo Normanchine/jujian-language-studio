@@ -1,0 +1,39 @@
+# Python environment and generated files
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+
+# Local settings, projects, essays, media, and credentials
+data/
+!data/.gitkeep
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Models, builds, and packaged applications
+models/
+build/
+build-*/
+dist/
+dist-*/
+*.spec.bak
+
+# Local archives, backups, and test media
+*-backup-*/
+*-archive-*/
+package-data-backup/
+implementation-backup-*/
+test-download/
+design-preview/
+preview*.png
+font-test.png
+packaged-diag.png
+
+# Local project notes and dated handoffs
+HANDOFF.md
+UPDATE_PLAN_*.md
+verify_core.py
+verify_real_playback.py

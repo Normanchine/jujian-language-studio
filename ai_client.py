@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -33,6 +34,7 @@ def ask_json(prompt: str, task: str, token_limit: int = 1600, *, careful: bool =
         endpoint = settings["cloud_endpoint"].rstrip("/")
         model = settings["cloud_model"]
         qwen = is_qwen_endpoint(endpoint)
+        deepseek = (urlparse(endpoint).hostname or "").lower() == "api.deepseek.com"
         key = cloud_key(endpoint)
         if not endpoint or not model or not key:
             raise ValueError("请先在设置中填写云端接口、模型和 API Key")
@@ -44,7 +46,8 @@ def ask_json(prompt: str, task: str, token_limit: int = 1600, *, careful: bool =
         if qwen:
             payload["enable_thinking"] = bool(careful and task == "writing")
         else:
-            payload["reasoning_effort"] = "low"
+            if deepseek:
+                payload["reasoning_effort"] = "low"
         try:
             for attempt in range(2):
                 # DeepSeek's thinking tokens count against max_tokens. If they
@@ -53,7 +56,7 @@ def ask_json(prompt: str, task: str, token_limit: int = 1600, *, careful: bool =
                     if qwen:
                         payload["enable_thinking"] = False
                         payload["max_tokens"] = max(3200, token_limit * 2)
-                    else:
+                    elif deepseek:
                         payload.pop("reasoning_effort", None)
                         payload["thinking"] = {"type": "disabled"}
                         payload["max_tokens"] = max(1600, token_limit)

@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import re
 
-from fugashi import Tagger
-
-
-_TAGGER = Tagger()
+_TAGGER = None
 _HAN = re.compile(r"[\u3400-\u9fff々〆ヶ]")
 _CATEGORY = {
     "名詞": "noun", "代名詞": "noun", "動詞": "verb", "形容詞": "adjective",
@@ -30,6 +27,7 @@ def _time_at(offset: int, spans: list[tuple[int, int, float, float]]) -> float |
 
 
 def display_tokens(text: str, audio_words: list[dict], language: str = "ja") -> list[dict]:
+    global _TAGGER
     if language == "en":
         if audio_words:
             return [{"text": str(word["text"]).strip(), "reading": "", "category": "other",
@@ -49,6 +47,9 @@ def display_tokens(text: str, audio_words: list[dict], language: str = "ja") -> 
 
     tokens: list[dict] = []
     cursor = 0
+    if _TAGGER is None:
+        from fugashi import Tagger
+        _TAGGER = Tagger()
     parsed = list(_TAGGER(text))
     for index, word in enumerate(parsed):
         surface = word.surface

@@ -17,6 +17,7 @@ Item {
     property string materialFilter: "全部"
     property color ink: "#26342C"
     property color paper: "#FFFEFB"
+    property color themeAccent: "#C94859"
     property bool showSide: false
     property int reviewElapsed: 0
     signal openNotes()
@@ -64,7 +65,7 @@ Item {
                 color: "#77857A"; font.pixelSize: 12 }
             Row { spacing: 9; anchors.right: parent.right
                 AppButton { text: "取消"; width: 82; onClicked: deleteConfirm.close() }
-                AppButton { text: "删除作文"; width: 104; primary: true
+                AppButton { text: "删除作文"; width: 104; primary: true; destructive: true
                     onClicked: {
                         writer.deleteDraft(view.pendingDelete)
                         deleteConfirm.close()
@@ -110,10 +111,8 @@ Item {
         RowLayout {
             width: parent.width; height: 58
             ColumnLayout { Layout.fillWidth: true; spacing: 2
-                Text { text: writer.currentPath ? (reviewMode ? "这篇文章的批改" : "写一篇文章") : "我的文章";
+                Text { text: reviewMode ? "作文批改" : "写作";
                     color: view.ink; font.pixelSize: 21; font.weight: Font.DemiBold }
-                Text { text: reviewMode ? "逐句阅读建议，原稿始终保留" : "给想法一个安静、完整的空间";
-                    color: "#829086"; font.pixelSize: 11 }
             }
             Row { spacing: 8; Layout.preferredWidth: childrenRect.width
                 Layout.preferredHeight: childrenRect.height; Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
@@ -197,7 +196,7 @@ Item {
                                  currentIndex: ({practice:0, toefl_email:1, toefl_discussion:2})[writer.current.writing_mode || "practice"] || 0
                                  onActivated: writer.setMode(["practice", "toefl_email", "toefl_discussion"][currentIndex]) }
                              TextField { id: topicField; Layout.fillWidth: true; height: 36
-                                 placeholderText: "今天想写什么？可留空，自由开始"
+                                 placeholderText: "写作题目（可留空）"
                                  font.pixelSize: 12; leftPadding: 12; color: view.ink
                                  background: Rectangle { radius: 9; color: "#F8F8F4"; border.color: "#E7EAE3" }
                                  onTextChanged: autosave.restart() }
@@ -214,7 +213,7 @@ Item {
                                 anchors.fill: parent; visible: !view.reviewMode
                                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                                 TextArea { id: draftText; width: Math.max(0, parent.width - 18); wrapMode: TextEdit.Wrap
-                                    placeholderText: "从第一句话开始。\n\n写下今天想到的事，或者试着使用右侧的表达。"
+                                    placeholderText: "在这里输入作文正文。"
                                     font.family: writer.current.language === "en" ? "Segoe UI" : "Yu Gothic UI"
                                     font.pixelSize: 17; color: view.ink; selectByMouse: true
                                     leftPadding: 10; rightPadding: 10; topPadding: 16; bottomPadding: 20
@@ -274,7 +273,7 @@ Item {
                                  model: ["词汇", "语法"] }
                              TextField { id: manualTarget; Layout.fillWidth: true; height: 34
                                  placeholderText: "多个词用逗号分隔"; font.pixelSize: 12
-                                 background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: manualTarget.activeFocus ? "#C94859" : "#DCE4DE" } }
+                                 background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: manualTarget.activeFocus ? view.themeAccent : "#DCE4DE" } }
                              AppButton { text: customKind.currentIndex === 0 ? "生成卡片" : "加入卡片"
                                  enabled: manualTarget.text.trim().length > 0 && !writer.busy
                                  onClicked: {
@@ -300,8 +299,8 @@ Item {
                                     delegate: Rectangle {
                                         required property var modelData
                                         width: parent.width; height: itemColumn.height + 18; radius: 7
-                                        color: view.selectedTargets.indexOf(modelData.expression) >= 0 ? "#FCEBF0" : "#F8FAF8"
-                                        border.color: view.selectedTargets.indexOf(modelData.expression) >= 0 ? "#DCA8B3" : "#E7EBE7"
+                                        color: view.selectedTargets.indexOf(modelData.expression) >= 0 ? settings.palette.selection : "#F8FAF8"
+                                        border.color: view.selectedTargets.indexOf(modelData.expression) >= 0 ? view.themeAccent : "#E7EBE7"
                                         Column { id: itemColumn; x: 9; y: 9; width: parent.width - 18; spacing: 4
                                             Text { width: parent.width; text: modelData.expression
                                                 wrapMode: Text.Wrap; color: view.ink; font.pixelSize: 13; font.bold: true }

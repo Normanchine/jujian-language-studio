@@ -7,8 +7,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-import imageio_ffmpeg
-import yt_dlp
 from PySide6.QtCore import QObject, Property, QThread, QUrl, Signal, Slot
 
 from model_settings import read_settings
@@ -28,6 +26,14 @@ def safe_name(value: str) -> str:
 
 def size_label(size: int | None) -> str:
     return f"约 {size / 1048576:.1f} MB" if size else "大小未知"
+
+
+def video_codec_label(codec: str) -> str:
+    name = codec.split(".", 1)[0].lower()
+    if not name:
+        return "未知编码"
+    return {"avc1": "H.264", "avc3": "H.264", "hvc1": "H.265", "hev1": "H.265",
+            "av01": "AV1", "vp09": "VP9", "vp9": "VP9"}.get(name, name.upper())
 
 
 def available_formats(info: dict) -> list[dict]:
@@ -51,7 +57,8 @@ def available_formats(info: dict) -> list[dict]:
         total = v_size + a_size if v_size and (a_size or not paired) else None
         size_exact = bool(item.get("filesize")) and (not paired or bool(paired.get("filesize")))
         fmt = item["format_id"] + ("+" + paired["format_id"] if paired else "")
-        choices.append({"id": fmt, "label": f"视频 · {item.get('height') or '?'}p",
+        codec = video_codec_label(item.get("vcodec") or "")
+        choices.append({"id": fmt, "label": f"视频 · {item.get('height') or '?'}p · {codec}",
                         "kind": "video", "sizeLabel": size_label(total), "estimated": not size_exact})
     return choices
 
@@ -80,6 +87,7 @@ class DownloadJob(QThread):
             common = {"quiet": True, "no_warnings": True, "noplaylist": True,
                       "skip_download": self.mode == "inspect", "socket_timeout": 20}
             if self.mode == "inspect":
+                import yt_dlp
                 with yt_dlp.YoutubeDL(common) as client:
                     info = client.extract_info(self.url, download=False)
                 if info.get("_type") in {"playlist", "multi_video"}:
@@ -97,6 +105,8 @@ class DownloadJob(QThread):
                       for path in folder.iterdir() if path.is_file()):
                 title = f"{original_title} ({copy_number})"
                 copy_number += 1
+            import imageio_ffmpeg
+            import yt_dlp
             ffmpeg_exe = Path(imageio_ffmpeg.get_ffmpeg_exe())
             options = {**common, "skip_download": False, "format": self.option["id"],
                        "outtmpl": str(folder / f"{title}.%(ext)s"), "overwrites": False,
@@ -239,6 +249,9 @@ class DownloadBridge(QObject):
         self.changed.emit()
 
     def _failed(self, detail: str) -> None:
-        self._status = f"下载失败：{detail}"
+        if self._mode == "download" and "UNEXPECTED_EOF_WHILE_READING" in detail:
+            self._status = "下载连接意外断开。可重试，或选择同清晰度的另一种编码。"
+        else:
+            self._status = f"下载失败：{detail}"
         self._error = True
         self.changed.emit()

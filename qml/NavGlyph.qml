@@ -4,16 +4,18 @@ Canvas {
     id: glyph
     property string kind: "home"
     property bool active: false
+    property color activeColor: "#4E8068"
     width: 24
     height: 24
     onKindChanged: requestPaint()
     onActiveChanged: requestPaint()
+    onActiveColorChanged: requestPaint()
     onPaint: {
         var p = getContext("2d")
         p.clearRect(0, 0, width, height)
         p.save()
         p.scale(width / 24, height / 24)
-        p.strokeStyle = active ? "#B54456" : "#607069"
+        p.strokeStyle = active ? activeColor : "#607069"
         p.lineWidth = 1.8
         p.lineCap = "round"
         p.lineJoin = "round"

@@ -3,6 +3,8 @@ import QtQuick.Controls
 
 ComboBox {
     id: control
+    property color accent: settings.palette.accent
+    property color selection: settings.palette.selection
     implicitHeight: 36
     implicitWidth: 128
     font.family: "Microsoft YaHei UI"
@@ -21,15 +23,15 @@ ComboBox {
         text: "⌄"; color: "#6D7A71"; font.pixelSize: 17
     }
     background: Rectangle {
-        radius: 8; color: control.pressed ? "#F8EFF1" : "#FFFFFF"
-        border.color: control.activeFocus ? "#C94859" : "#DCE4DE"
+        radius: 8; color: control.pressed ? control.selection : "#FFFFFF"
+        border.color: control.activeFocus ? control.accent : "#DCE4DE"
     }
     delegate: ItemDelegate {
         width: control.width
         text: control.textRole ? modelData[control.textRole] : modelData
         font: control.font
         highlighted: control.highlightedIndex === index
-        background: Rectangle { color: parent.highlighted ? "#F9E9ED" : "#FFFFFF" }
+        background: Rectangle { color: parent.highlighted ? control.selection : "#FFFFFF" }
     }
     popup: Popup {
         y: control.height + 4; width: control.width

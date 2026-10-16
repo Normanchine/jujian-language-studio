@@ -28,6 +28,7 @@ package-data-backup/
 implementation-backup-*/
 test-download/
 design-preview/
+release-verification/
 preview*.png
 font-test.png
 packaged-diag.png
@@ -37,3 +38,10 @@ HANDOFF.md
 UPDATE_PLAN_*.md
 verify_core.py
 verify_real_playback.py
+verify_*.py
+smoke.py
+install_jujian.py
+maintenance/
+启动新版预览.cmd
+预览字幕拆分.cmd
+Modelfile

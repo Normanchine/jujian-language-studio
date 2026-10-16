@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 from PySide6.QtCore import QUrl
+from PySide6.QtGui import QKeySequence
 
 import keyring
 from keyring.backends.Windows import WinVaultKeyring
@@ -17,13 +18,41 @@ CONFIG = ROOT / "data" / "settings.json"
 KEY_SERVICE = "mainichi-nihongo-cloud-api"
 KEY_USER = "default"
 QWEN_KEY_USER = "aliyun-qwen"
+THEME_PALETTES = {
+    "sage": {"name": "松绿", "side": "#C9DDCE", "page": "#EFF5F0", "surface": "#FAFCFA",
+             "accent": "#4E8068", "selection": "#E0EEE3"},
+    "blue": {"name": "雾蓝", "side": "#C9DCEB", "page": "#F0F6FA", "surface": "#FAFCFD",
+             "accent": "#4E7FA1", "selection": "#DFEBF3"},
+    "violet": {"name": "淡紫", "side": "#D9D1E6", "page": "#F5F2F8", "surface": "#FCFBFD",
+               "accent": "#806AA0", "selection": "#EBE5F2"},
+    "warm": {"name": "暖棕", "side": "#E1D6CC", "page": "#F8F4F0", "surface": "#FDFBF9",
+             "accent": "#A47958", "selection": "#F0E6DC"},
+    "teal": {"name": "湖青", "side": "#BDDAD8", "page": "#EDF6F5", "surface": "#FBFDFD",
+             "accent": "#397F7C", "selection": "#DCECEA"},
+    "gold": {"name": "杏黄", "side": "#E8DDBD", "page": "#FAF7EB", "surface": "#FEFDF8",
+             "accent": "#9A783B", "selection": "#F2EBD5"},
+    "slate": {"name": "石板蓝", "side": "#CDD5DF", "page": "#F0F3F6", "surface": "#FBFCFD",
+              "accent": "#647A96", "selection": "#E2E9F0"},
+    "classic": {"name": "经典浅色", "side": "#E1E6E1", "page": "#F2F4F1", "surface": "#FFFFFF",
+                "accent": "#C94859", "selection": "#E8ECE7"},
+}
+THEMES = set(THEME_PALETTES)
 DEFAULTS = {
     "download_dir": str(Path.home() / "Downloads" / "句间"),
     "cloud_endpoint": "",
     "cloud_model": "",
-    "translation_backend": "local",
-    "analysis_backend": "local",
-    "writing_backend": "local",
+    "translation_backend": "cloud",
+    "analysis_backend": "cloud",
+    "writing_backend": "cloud",
+    "theme": "sage",
+    "shortcut_previous": "Ctrl+Left",
+    "shortcut_next": "Ctrl+Right",
+    "shortcut_play": "Space",
+    "shortcut_loop": "Ctrl+L",
+    "video_size": "small",
+    "show_transcript": False,
+    "highlight_delay_ms": 200,
+    "listening_video_height": 360,
 }
 
 
@@ -34,7 +63,10 @@ def read_settings() -> dict:
             raw = {}
     except (OSError, ValueError):
         raw = {}
-    return {**DEFAULTS, **{key: raw[key] for key in DEFAULTS if key in raw}}
+    result = {**DEFAULTS, **{key: raw[key] for key in DEFAULTS if key in raw}}
+    if not isinstance(result["theme"], str) or result["theme"] not in THEMES:
+        result["theme"] = DEFAULTS["theme"]
+    return result
 
 
 def is_qwen_endpoint(endpoint: str) -> bool:
@@ -64,6 +96,14 @@ class SettingsBridge(QObject):
     @Property("QVariantMap", notify=changed)
     def values(self) -> dict:
         return self._data
+
+    @Property("QVariantMap", notify=changed)
+    def palette(self) -> dict:
+        return THEME_PALETTES[self._data["theme"]]
+
+    @Property("QVariantList", constant=True)
+    def themeOptions(self) -> list[dict]:
+        return [{"key": key, **palette} for key, palette in THEME_PALETTES.items()]
 
     @Property(bool, notify=changed)
     def hasKey(self) -> bool:
@@ -96,9 +136,11 @@ class SettingsBridge(QObject):
         try:
             folder.mkdir(parents=True, exist_ok=True)
             self._data = {
+                **self._data,
                 "download_dir": str(folder.resolve()), "cloud_endpoint": endpoint,
                 "cloud_model": model.strip(), "translation_backend": translation,
                 "analysis_backend": analysis, "writing_backend": writing,
+                "theme": self._data["theme"],
             }
             CONFIG.parent.mkdir(parents=True, exist_ok=True)
             temporary = CONFIG.with_suffix(".json.tmp")
@@ -111,6 +153,66 @@ class SettingsBridge(QObject):
             self._status = f"保存设置失败：{exc}"
             self.changed.emit()
             return False
+
+    @Slot(str, result=bool)
+    def setTheme(self, theme: str) -> bool:
+        if theme not in THEMES:
+            return False
+        previous = self._data
+        self._data = {**previous, "theme": theme}
+        try:
+            CONFIG.parent.mkdir(parents=True, exist_ok=True)
+            temporary = CONFIG.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(CONFIG)
+        except OSError as exc:
+            self._data = previous
+            self._status = f"保存主题失败：{exc}"
+            self.changed.emit()
+            return False
+        self._status = "主题已切换。"
+        self.changed.emit()
+        return True
+
+    @Slot(int, int, result=str)
+    def keySequence(self, key: int, modifiers: int) -> str:
+        if key in (0x01000020, 0x01000021, 0x01000022, 0x01000023, 0x01000024):
+            return ""
+        return QKeySequence(key | (modifiers & 0x1E000000)).toString(QKeySequence.PortableText)
+
+    def _save_preferences(self, updates: dict) -> bool:
+        previous = self._data
+        self._data = {**previous, **updates}
+        try:
+            CONFIG.parent.mkdir(parents=True, exist_ok=True)
+            temporary = CONFIG.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(CONFIG)
+        except OSError as exc:
+            self._data = previous
+            self._status = f"保存设置失败：{exc}"
+            self.changed.emit()
+            return False
+        self._status = "设置已保存。"
+        self.changed.emit()
+        return True
+
+    @Slot(str, str, str, str, result=bool)
+    def saveShortcuts(self, previous: str, following: str, play: str, loop: str) -> bool:
+        sequences = [QKeySequence(value).toString(QKeySequence.PortableText)
+                     for value in (previous, following, play, loop)]
+        if any(not value for value in sequences) or len(set(sequences)) != 4:
+            self._status = "快捷键不能为空或重复，请重新录入。"
+            self.changed.emit()
+            return False
+        return self._save_preferences(dict(zip(
+            ("shortcut_previous", "shortcut_next", "shortcut_play", "shortcut_loop"), sequences)))
+
+    @Slot(str, bool, result=bool)
+    def saveListeningLayout(self, size: str, transcript: bool) -> bool:
+        if size not in {"small", "medium", "large", "hidden"}:
+            return False
+        return self._save_preferences({"video_size": size, "show_transcript": transcript})
 
     @Slot(str, result=bool)
     def saveKey(self, value: str) -> bool:
@@ -130,6 +232,12 @@ class SettingsBridge(QObject):
             self._status = f"保存密钥失败：{exc}"
             self.changed.emit()
             return False
+
+    @Slot(int, int, result=bool)
+    def savePlayerPreferences(self, delay: int, height: int) -> bool:
+        if delay not in {0, 100, 200, 300, 400, 600} or not 100 <= height <= 800:
+            return False
+        return self._save_preferences({"highlight_delay_ms": delay, "listening_video_height": height})
 
     @Slot()
     def clearKey(self) -> None:

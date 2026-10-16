@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
 import QtMultimedia
+import QtQuick.Effects
 
 ApplicationWindow {
     id: root
@@ -11,15 +12,60 @@ ApplicationWindow {
     minimumWidth: 900
     minimumHeight: 640
     visible: true
+    flags: Qt.Window | Qt.FramelessWindowHint
     title: study.hasMedia ? "句间 — " + study.title : "句间"
-    color: "#F4F5F4"
+    color: "transparent"
+    background: Rectangle {
+        color: root.pageColor; radius: root.maximized ? 0 : 16
+        antialiasing: true
+    }
+    contentItem.layer.enabled: !root.maximized
+    contentItem.layer.effect: MultiEffect {
+        maskEnabled: true
+        maskSource: cornerMask
+        maskThresholdMin: 0.5
+        maskSpreadAtMin: 1.0
+    }
+    Rectangle {
+        id: cornerMask
+        width: root.width; height: root.height
+        radius: root.maximized ? 0 : 16
+        antialiasing: true
+        color: "white"; visible: false
+        layer.enabled: true
+        layer.smooth: true
+        layer.samples: 4
+    }
 
-    property bool showList: true
+    property string themeKey: settings.values.theme || "sage"
+    property color sidebarColor: settings.palette.side
+    property color pageColor: settings.palette.page
+    property color surfaceColor: settings.palette.surface
+    property color accentColor: themeKey === "classic" ? "#4E8068" : settings.palette.accent
+    property color selectionColor: settings.palette.selection
+
+    property real videoHeight: settings.values.listening_video_height || 360
+    property int highlightDelayMs: settings.values.highlight_delay_ms === undefined ? 200 : settings.values.highlight_delay_ms
+    property real highlightSeconds: Math.max(0, player.position - highlightDelayMs) / 1000
+    property int highlightedSentenceIndex: {
+        var segments = study.segments
+        var selected = 0
+        for (var i = 0; i < segments.length; i++) {
+            if (segments[i].start > highlightSeconds) break
+            selected = i
+        }
+        return selected
+    }
+    onHighlightedSentenceIndexChanged: if (readingList.followPlayback) Qt.callLater(readingList.scrollToActive)
+    property bool listeningKeysEnabled: page === "listen" && study.hasMedia
+        && !editPopup.visible && !analysisPopup.visible
+        && !(activeFocusItem instanceof TextInput) && !(activeFocusItem instanceof TextEdit)
     property bool textHidden: false
     property bool scrubbing: false
     property string page: "home"
     property bool sidebarCollapsed: false
     property int pendingResumeMs: 0
+    property bool maximized: visibility === Window.Maximized
     onClosing: {
         if (study.hasMedia) study.savePlayback(player.position)
         writingView.saveNow()
@@ -30,6 +76,17 @@ ApplicationWindow {
     function timeText(ms) {
         var secs = Math.max(0, Math.floor(ms / 1000))
         return Math.floor(secs / 60) + ":" + String(secs % 60).padStart(2, "0")
+    }
+    function changeRate() {
+        rateIndex = (rateIndex + 1) % rates.length
+        player.playbackRate = rates[rateIndex]
+    }
+    function editCurrentSentence() {
+        originalEdit.text = study.currentSentence.text
+        translationEdit.text = study.currentSentence.translation || study.currentSentence.analysis.translation || ""
+        startEdit.text = String(study.currentSentence.start)
+        endEdit.text = String(study.currentSentence.end)
+        editPopup.open()
     }
     function categoryColor(category) {
         if (category === "noun") return "#E99AAA"
@@ -51,16 +108,16 @@ ApplicationWindow {
         implicitHeight: 36
         radius: 8
         color: !enabled ? "#EFF0EF"
-             : primary ? (pointer.containsMouse ? "#B4394B" : "#C94859")
-             : selected ? (pointer.containsMouse ? "#F6DDE2" : "#FAE9ED")
+             : primary ? (pointer.containsMouse ? Qt.darker(root.accentColor, 1.12) : root.accentColor)
+             : selected ? (pointer.containsMouse ? Qt.darker(root.selectionColor, 1.06) : root.selectionColor)
              : pointer.containsMouse ? "#E9ECEA" : "#FFFFFF"
-        border.color: !enabled ? "#E6E8E6" : primary ? "#C94859" : selected ? "#E7B3BD" : "#DDE2DF"
+        border.color: !enabled ? "#E6E8E6" : primary ? root.accentColor : selected ? root.accentColor : "#DDE2DF"
         border.width: 1
         Text {
             id: caption
             anchors.centerIn: parent
             text: control.label
-            color: !control.enabled ? "#9DA49F" : control.primary ? "#FFFFFF" : control.selected ? "#A83A4C" : "#26332D"
+            color: !control.enabled ? "#9DA49F" : control.primary ? "#FFFFFF" : control.selected ? root.accentColor : "#26332D"
             font.family: "Microsoft YaHei UI"
             font.pixelSize: 13
             font.weight: Font.DemiBold
@@ -81,16 +138,19 @@ ApplicationWindow {
         property string label: ""
         property string iconName: "home"
         property bool selected: false
+        property color accent: root.accentColor
+        property color tint: root.selectionColor
         signal clicked()
         height: 48
-        radius: 8
-        color: selected ? "#F2F3F1" : navHover.containsMouse ? "#F5F6F4" : "transparent"
+        radius: 10
+        color: selected ? tint : navHover.containsMouse ? Qt.lighter(root.sidebarColor, 1.07) : "transparent"
         Rectangle { x: 0; y: 10; width: 3; height: 28; radius: 2
-            color: nav.selected ? "#C94859" : "transparent" }
+            color: nav.selected ? nav.accent : "transparent" }
         Row {
             anchors.left: parent.left; anchors.leftMargin: 16
             anchors.verticalCenter: parent.verticalCenter; spacing: 16
-            NavGlyph { width: 22; height: 22; kind: nav.iconName; active: nav.selected }
+            NavGlyph { width: 22; height: 22; kind: nav.iconName
+                active: nav.selected; activeColor: nav.accent }
             Text { visible: !root.sidebarCollapsed; text: nav.label
                 color: nav.selected ? "#2A3B31" : "#536158"
                 font.family: "Microsoft YaHei UI"; font.pixelSize: 14
@@ -101,6 +161,39 @@ ApplicationWindow {
             cursorShape: Qt.PointingHandCursor; onClicked: nav.clicked() }
     }
 
+    component WindowButton: Rectangle {
+        id: windowButton
+        property string kind: ""
+        property string hint: ""
+        property bool destructive: false
+        signal clicked()
+        width: 34; height: 32; radius: 8
+        color: buttonMouse.pressed ? (destructive ? "#F3D9DE" : Qt.darker(root.selectionColor, 1.06))
+             : buttonMouse.containsMouse ? (destructive ? "#FBEDEF" : root.selectionColor) : "transparent"
+        property color glyphColor: destructive && buttonMouse.containsMouse ? "#B83E50" : "#536158"
+        Rectangle { visible: kind === "minimize"; width: 11; height: 1
+            anchors.centerIn: parent; color: windowButton.glyphColor }
+        Rectangle { visible: kind === "maximize"
+            width: 11; height: 10; anchors.centerIn: parent; color: "transparent"
+            border.width: 1; border.color: windowButton.glyphColor }
+        Rectangle { visible: kind === "restore"; x: 15; y: 8; width: 10; height: 9
+            color: "transparent"; border.width: 1; border.color: windowButton.glyphColor }
+        Rectangle { visible: kind === "restore"; x: 11; y: 12; width: 10; height: 9
+            color: windowButton.color; border.width: 1; border.color: windowButton.glyphColor }
+        Rectangle { visible: kind === "close"; anchors.centerIn: parent; width: 14; height: 1
+            rotation: 45; color: windowButton.glyphColor }
+        Rectangle { visible: kind === "close"; anchors.centerIn: parent; width: 14; height: 1
+            rotation: -45; color: windowButton.glyphColor }
+        MouseArea {
+            id: buttonMouse; anchors.fill: parent; hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: windowButton.clicked()
+        }
+        ToolTip.visible: buttonMouse.containsMouse
+        ToolTip.delay: 650
+        ToolTip.text: hint
+    }
+
     MediaPlayer {
         id: player
         objectName: "mediaPlayer"
@@ -108,6 +201,7 @@ ApplicationWindow {
         audioOutput: AudioOutput { id: sound; volume: 0.85 }
         videoOutput: videoView
         onMediaStatusChanged: {
+            if (mediaStatus === MediaPlayer.EndOfMedia) study.finishPlayback()
             if (root.pendingResumeMs > 0 && (mediaStatus === MediaPlayer.LoadedMedia
                     || mediaStatus === MediaPlayer.BufferedMedia)) {
                 position = root.pendingResumeMs
@@ -173,8 +267,8 @@ ApplicationWindow {
     Rectangle {
         id: sidebar
         anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
-        width: root.sidebarCollapsed ? 64 : 216; color: "#FAFBF9"
-        Rectangle { anchors.right: parent.right; height: parent.height; width: 1; color: "#E1E5E2" }
+        width: root.sidebarCollapsed ? 64 : 216; color: root.sidebarColor
+        Rectangle { anchors.right: parent.right; height: parent.height; width: 1; color: Qt.darker(root.sidebarColor, 1.08) }
         Row {
             x: 15; y: 15; spacing: 11
             Image { width: 34; height: 34; source: "../assets/jujian.png"
@@ -185,6 +279,12 @@ ApplicationWindow {
                 Text { text: "听读与写作"; color: "#8A968D"
                     font.family: "Microsoft YaHei UI"; font.pixelSize: 10 }
             }
+        }
+        MouseArea {
+            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+            height: 64
+            onPressed: root.startSystemMove()
+            onDoubleClicked: root.maximized ? root.showNormal() : root.showMaximized()
         }
         Column {
             anchors.left: parent.left; anchors.right: parent.right
@@ -204,7 +304,7 @@ ApplicationWindow {
         }
         Rectangle { x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 16
             width: parent.width - 16; height: 40; radius: 8
-            color: collapseHover.containsMouse ? "#F0F2EF" : "transparent"
+            color: collapseHover.containsMouse ? root.selectionColor : "transparent"
             Text { anchors.centerIn: parent; text: root.sidebarCollapsed ? "›" : "‹   收起侧栏"
                 color: "#718077"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12 }
             MouseArea { id: collapseHover; anchors.fill: parent; hoverEnabled: true
@@ -216,14 +316,25 @@ ApplicationWindow {
     Rectangle {
         id: toolbar
         anchors.left: sidebar.right; anchors.right: parent.right; anchors.top: parent.top
-        height: 62; color: "#FFFFFF"
-        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#E1E5E2" }
+        height: 62; color: root.surfaceColor
+        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Qt.darker(root.pageColor, 1.06) }
+        MouseArea {
+            anchors.fill: parent
+            onPressed: root.startSystemMove()
+            onDoubleClicked: root.maximized ? root.showNormal() : root.showMaximized()
+        }
         RowLayout {
-            anchors.fill: parent; anchors.leftMargin: 20; anchors.rightMargin: 18; spacing: 7
+            anchors.fill: parent; anchors.leftMargin: 20; anchors.rightMargin: 132; spacing: 7
             Text { Layout.fillWidth: true; Layout.minimumWidth: 70
                 text: root.page === "listen" ? study.title : ({home:"首页", writing:"写作", library:"资料库", notes:"笔记", settings:"设置"}[root.page] || "首页")
                 elide: Text.ElideMiddle; color: "#27362D"
-                font.family: "Microsoft YaHei UI"; font.pixelSize: 15; font.weight: Font.DemiBold }
+                font.family: "Microsoft YaHei UI"; font.pixelSize: 15; font.weight: Font.DemiBold
+                MouseArea {
+                    anchors.fill: parent
+                    onPressed: root.startSystemMove()
+                    onDoubleClicked: root.maximized ? root.showNormal() : root.showMaximized()
+                }
+            }
             ComboBox {
                 id: languageChoice; visible: root.page === "listen"
                 Layout.preferredWidth: 112; Layout.preferredHeight: 36
@@ -237,8 +348,8 @@ ApplicationWindow {
                     font.family: "Microsoft YaHei UI"; font.pixelSize: 13 }
                 indicator: Text { x: parent.width - 21; anchors.verticalCenter: parent.verticalCenter
                     text: "⌄"; color: "#69776F"; font.pixelSize: 16 }
-                background: Rectangle { radius: 8; color: languageChoice.pressed ? "#F6DDE2" : "#FFFFFF"
-                    border.color: languageChoice.activeFocus ? "#C94859" : "#DDE2DF" }
+                background: Rectangle { radius: 8; color: languageChoice.pressed ? root.selectionColor : "#FFFFFF"
+                    border.color: languageChoice.activeFocus ? root.accentColor : "#DDE2DF" }
                 delegate: ItemDelegate { width: languageChoice.width; text: modelData
                     font.family: "Microsoft YaHei UI"; font.pixelSize: 13
                     highlighted: languageChoice.highlightedIndex === index }
@@ -249,7 +360,7 @@ ApplicationWindow {
                         currentIndex: languageChoice.highlightedIndex }
                     background: Rectangle { radius: 8; color: "#FFFFFF"; border.color: "#DDE2DF" } }
             }
-            ActionButton { visible: root.page === "listen"; label: study.busy ? "正在转写…" : "转写整段"
+            ActionButton { visible: root.page === "listen"; label: study.busy && !study.splitting ? "正在转写…" : "转写整段"
                 enabled: study.hasMedia && !study.busy && !study.enriching; onClicked: study.transcribe() }
             ActionButton { visible: root.page === "listen" && root.width >= 1160; label: "导入字幕"
                 enabled: study.hasMedia && !study.busy && !study.enriching; onClicked: transcriptPicker.open() }
@@ -258,33 +369,81 @@ ApplicationWindow {
             ActionButton { visible: root.page === "listen" && root.width >= 1160
                 label: study.contentLanguage === "en" ? "句子解释" : "语法解析"
                 enabled: study.sentenceCount > 0 && !study.busy && !study.enriching; onClicked: study.startEnrichment(true) }
-            ActionButton { visible: root.page === "listen" && root.width >= 1160
-                label: root.showList ? "收起字幕" : "显示字幕"; enabled: study.hasMedia
-                onClicked: root.showList = !root.showList }
             ActionButton { visible: root.page === "listen" && root.width < 1160; label: "更多"
                 onClicked: moreMenu.open() }
             ActionButton { visible: study.enriching && root.page === "listen"; label: "停止处理"
                 onClicked: study.stopEnrichment() }
+            ActionButton { visible: root.page === "listen" && root.width >= 1160; label: study.splitting ? "整理中…" : "整理字幕"
+                enabled: study.contentLanguage === "en" && study.sentenceCount > 0 && !study.busy && !study.enriching
+                onClicked: study.organizeSubtitles() }
             ActionButton { visible: root.page === "listen"; label: "打开文件"
                 enabled: !study.busy && !study.enriching
                 onClicked: mediaPicker.open() }
         }
         Menu { id: moreMenu; x: toolbar.width - width - 18; y: toolbar.height - 2
+            MenuItem { text: "整理英语字幕"; enabled: study.contentLanguage === "en" && study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.organizeSubtitles() }
             MenuItem { text: "导入字幕"; enabled: study.hasMedia && !study.busy && !study.enriching; onTriggered: transcriptPicker.open() }
             MenuItem { text: "中文翻译"; enabled: study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.startTranslation(true) }
             MenuItem { text: study.contentLanguage === "en" ? "句子解释" : "语法解析"
                 enabled: study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.startEnrichment(true) }
-            MenuItem { text: root.showList ? "收起字幕" : "显示字幕"; onTriggered: root.showList = !root.showList }
         }
+        Row {
+            anchors.right: parent.right; anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter; spacing: 3
+            WindowButton { objectName: "minimizeButton"; kind: "minimize"; hint: "最小化"; onClicked: root.showMinimized() }
+            WindowButton { objectName: "maximizeButton"; kind: root.maximized ? "restore" : "maximize"
+                hint: root.maximized ? "还原" : "最大化"
+                onClicked: root.maximized ? root.showNormal() : root.showMaximized() }
+            WindowButton { objectName: "closeButton"; kind: "close"; hint: "关闭"; destructive: true; onClicked: root.close() }
+        }
+    }
+
+    // Frameless windows need explicit resize handles around their outer edge.
+    Item {
+        anchors.fill: parent; z: 100
+        visible: !root.maximized
+        MouseArea { anchors.left: parent.left; anchors.top: parent.top; width: 7; height: 7
+            cursorShape: Qt.SizeFDiagCursor; onPressed: root.startSystemResize(Qt.TopEdge | Qt.LeftEdge) }
+        MouseArea { anchors.right: parent.right; anchors.top: parent.top; width: 7; height: 7
+            cursorShape: Qt.SizeBDiagCursor; onPressed: root.startSystemResize(Qt.TopEdge | Qt.RightEdge) }
+        MouseArea { anchors.left: parent.left; anchors.bottom: parent.bottom; width: 7; height: 7
+            cursorShape: Qt.SizeBDiagCursor; onPressed: root.startSystemResize(Qt.BottomEdge | Qt.LeftEdge) }
+        Item {
+            id: bottomRightResize
+            objectName: "bottomRightResize"
+            anchors.right: parent.right; anchors.bottom: parent.bottom
+            width: 24; height: 24; z: 1
+            Rectangle { x: 7; y: 15; width: 13; height: 1; rotation: -45
+                color: gripMouse.containsMouse ? "#718077" : "#AAB5AD" }
+            Rectangle { x: 13; y: 17; width: 7; height: 1; rotation: -45
+                color: gripMouse.containsMouse ? "#718077" : "#AAB5AD" }
+            MouseArea {
+                id: gripMouse; objectName: "bottomRightGripMouse"
+                anchors.fill: parent; hoverEnabled: true
+                cursorShape: Qt.SizeFDiagCursor
+                onPressed: root.startSystemResize(Qt.BottomEdge | Qt.RightEdge)
+            }
+        }
+        MouseArea { anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
+            anchors.topMargin: 7; anchors.bottomMargin: 7; width: 5
+            cursorShape: Qt.SizeHorCursor; onPressed: root.startSystemResize(Qt.LeftEdge) }
+        MouseArea { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
+            anchors.topMargin: 7; anchors.bottomMargin: 7; width: 5
+            cursorShape: Qt.SizeHorCursor; onPressed: root.startSystemResize(Qt.RightEdge) }
+        MouseArea { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+            anchors.leftMargin: 7; anchors.rightMargin: 7; height: 5
+            cursorShape: Qt.SizeVerCursor; onPressed: root.startSystemResize(Qt.TopEdge) }
+        MouseArea { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            anchors.leftMargin: 7; anchors.rightMargin: 7; height: 5
+            cursorShape: Qt.SizeVerCursor; onPressed: root.startSystemResize(Qt.BottomEdge) }
     }
 
     Rectangle {
         id: statusBar
         anchors.left: sidebar.right; anchors.right: parent.right; anchors.bottom: parent.bottom
-        height: 29; color: "#FFFFFF"
-        Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: "#E1E5E2" }
+        height: 27; color: "transparent"
         Text {
-            x: 20; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 40
+            x: 16; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 48
             text: player.errorString && root.page === "listen" ? "播放错误：" + player.errorString
                   : root.page === "listen" && study.currentSentence.suggestion ? study.currentSentence.suggestion
                   : root.page === "writing" || root.page === "notes" ? writer.status
@@ -301,9 +460,11 @@ ApplicationWindow {
         anchors.left: sidebar.right; anchors.right: parent.right
         anchors.top: toolbar.bottom; anchors.bottom: statusBar.top
         anchors.margins: 16
+        property real studyWidth: Math.min(width, 1100)
 
         HomeView {
             anchors.fill: parent; visible: root.page === "home"
+            themeAccent: root.accentColor
             onOpenLocal: mediaPicker.open()
             onNewDraft: { writer.newDraft("ja"); writingView.libraryMode = false; root.page = "writing" }
             onOpenProject: { study.savePlayback(player.position); study.openProject(path) }
@@ -312,8 +473,10 @@ ApplicationWindow {
             onOpenWriting: { writer.refresh(); writingView.showLibrary(); root.page = "writing" }
         }
         LibraryView { anchors.fill: parent; visible: root.page === "library"
+            themeAccent: root.accentColor
             onOpenProject: { study.savePlayback(player.position); study.openProject(path) } }
         WritingView { id: writingView; anchors.fill: parent; visible: root.page === "writing"
+            themeAccent: root.accentColor
             onOpenNotes: { writer.refresh(); root.page = "notes" } }
         NotesView { anchors.fill: parent; visible: root.page === "notes" }
         SettingsView { anchors.fill: parent; visible: root.page === "settings" }
@@ -321,19 +484,32 @@ ApplicationWindow {
         Item {
             id: leftPane
             visible: root.page === "listen"
-            anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
-            width: parent.width - (root.showList && study.hasMedia ? 312 : 0)
+            x: (workspace.width - workspace.studyWidth) / 2
+            anchors.top: parent.top; anchors.bottom: parent.bottom
+            width: workspace.studyWidth
 
             Rectangle {
                 id: mediaFrame
-                x: 0; y: 0; width: parent.width
-                height: !study.hasMedia ? leftPane.height
-                     : study.hasVideo ? Math.min(320, Math.max(220, leftPane.height * 0.43))
-                     : 96
+                objectName: "mediaFrame"
+                x: (parent.width - width) / 2; y: 0
+                width: study.hasVideo ? Math.min(parent.width, height * (videoView.sourceRect.height > 0 ? videoView.sourceRect.width / videoView.sourceRect.height : 16 / 9)) : parent.width
+                height: !study.hasMedia ? leftPane.height : study.hasVideo
+                    ? Math.max(96, Math.min(root.videoHeight, leftPane.height - 240)) : 96
                 radius: 10
                 color: study.hasVideo ? "#1D2320" : study.hasMedia ? "#E7DFDE" : "#E9ECE9"
                 border.color: study.hasMedia && !study.hasVideo ? "#D8CFCE" : "transparent"
                 clip: true
+                layer.enabled: study.hasVideo
+                layer.effect: MultiEffect {
+                    maskEnabled: true; maskSource: videoMask
+                    maskThresholdMin: 0.5; maskSpreadAtMin: 1.0
+                }
+                Rectangle {
+                    id: videoMask
+                    width: mediaFrame.width; height: mediaFrame.height
+                    radius: 10; antialiasing: true; color: "white"; visible: false
+                    layer.enabled: true; layer.samples: 4; layer.smooth: true
+                }
                 VideoOutput {
                     id: videoView
                     anchors.fill: parent
@@ -345,7 +521,7 @@ ApplicationWindow {
                     width: parent.width - 48; spacing: 17
                     visible: study.hasMedia && !study.hasVideo
                     Text {
-                        text: "♫"; color: "#B9495A"; font.pixelSize: 32
+                        text: "♫"; color: root.accentColor; font.pixelSize: 32
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Column {
@@ -374,79 +550,65 @@ ApplicationWindow {
 
             Rectangle {
                 id: transport
-                x: 0; y: parent.height - height; width: parent.width; height: 112
+                x: 0; y: parent.height - height; width: parent.width; height: 78
                 visible: study.hasMedia
-                radius: 10; color: "#FFFFFF"; border.color: "#DFE4E0"
+                radius: 12; color: "#FFFFFF"; border.color: "#DFE4E0"
                 Slider {
                     id: progress
-                    x: 19; y: 10; width: parent.width - 38; height: 26
+                    x: 16; y: 4; width: parent.width - 32; height: 22
                     from: 0; to: Math.max(1, player.duration); value: player.position
-                    enabled: study.hasMedia
+                    onPressedChanged: root.scrubbing = pressed
+                    onMoved: player.position = Math.round(value)
                     background: Rectangle {
-                        x: progress.leftPadding
-                        y: progress.topPadding + progress.availableHeight / 2 - height / 2
+                        x: progress.leftPadding; y: progress.height / 2 - 2
                         width: progress.availableWidth; height: 4; radius: 2; color: "#E1E6E2"
-                        Rectangle { width: progress.visualPosition * parent.width; height: parent.height; radius: 2; color: "#C94859" }
+                        Rectangle { width: parent.width * progress.visualPosition; height: 4; radius: 2; color: root.accentColor }
                     }
                     handle: Rectangle {
                         x: progress.leftPadding + progress.visualPosition * (progress.availableWidth - width)
-                        y: progress.topPadding + progress.availableHeight / 2 - height / 2
-                        width: 15; height: 15; radius: 8; color: "#C94859"; border.color: "white"; border.width: 2
+                        y: progress.height / 2 - 6; width: 12; height: 12; radius: 6; color: root.accentColor
                     }
-                    onPressedChanged: root.scrubbing = pressed
-                    onMoved: player.position = Math.round(value)
                 }
-                Text { x: 20; y: 36; text: root.timeText(player.position); color: "#69766D"; font.family: "Segoe UI"; font.pixelSize: 12 }
-                Text {
-                    anchors.right: parent.right; anchors.rightMargin: 20; y: 36
-                    text: root.timeText(player.duration || study.durationMs)
-                    color: "#69766D"; font.family: "Segoe UI"; font.pixelSize: 12
+                Text { x: 16; y: 27; text: root.timeText(player.position); color: "#748178"; font.pixelSize: 11 }
+                Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 27
+                    text: root.timeText(player.duration); color: "#748178"; font.pixelSize: 11 }
+                Row {
+                    x: 16; y: 42; spacing: 8
+                    ActionButton { label: "上一句"; height: 28; implicitHeight: 28
+                        enabled: study.activeIndex > 0; onClicked: study.chooseSentence(study.activeIndex - 1) }
+                    ActionButton { label: player.playbackState === MediaPlayer.PlayingState ? "暂停" : "播放"
+                        height: 28; implicitHeight: 28; primary: true
+                        onClicked: player.playbackState === MediaPlayer.PlayingState ? player.pause() : player.play() }
+                    ActionButton { label: "下一句"; height: 28; implicitHeight: 28
+                        enabled: study.activeIndex + 1 < study.sentenceCount; onClicked: study.chooseSentence(study.activeIndex + 1) }
+                    ActionButton { label: "循环本句"; height: 28; implicitHeight: 28; selected: study.loopSentence; onClicked: study.toggleLoop() }
+                    ActionButton { visible: transport.width >= 790; label: root.textHidden ? "显示原文" : "隐藏原文"; height: 28; implicitHeight: 28; onClicked: root.textHidden = !root.textHidden }
+                    ActionButton { label: root.rates[root.rateIndex] + "×"; height: 28; implicitHeight: 28; onClicked: root.changeRate() }
+                    ActionButton { visible: transport.width >= 790; label: "校对本句"; height: 28; implicitHeight: 28; onClicked: root.editCurrentSentence() }
                 }
                 Row {
-                    x: 18; y: 70; spacing: 7
-                    ActionButton { label: "上一句"; enabled: study.activeIndex > 0; onClicked: study.chooseSentence(study.activeIndex - 1) }
-                    ActionButton {
-                        width: 80; label: player.playbackState === MediaPlayer.PlayingState ? "暂停" : "播放"
-                        primary: true; enabled: study.hasMedia
-                        onClicked: player.playbackState === MediaPlayer.PlayingState ? player.pause() : player.play()
-                    }
-                    ActionButton { label: "下一句"; enabled: study.activeIndex + 1 < study.sentenceCount; onClicked: study.chooseSentence(study.activeIndex + 1) }
-                    ActionButton { label: "循环本句"; selected: study.loopSentence; enabled: study.sentenceCount > 0; onClicked: study.toggleLoop() }
-                    ActionButton { label: root.textHidden ? "显示原文" : "隐藏原文"; enabled: study.sentenceCount > 0; onClicked: root.textHidden = !root.textHidden }
-                    ActionButton { label: root.rates[root.rateIndex].toFixed(2).replace(/0$/, "") + "×"; onClicked: { root.rateIndex = (root.rateIndex + 1) % root.rates.length; player.playbackRate = root.rates[root.rateIndex] } }
-                    ActionButton {
-                        label: "校对本句"; enabled: study.sentenceCount > 0
-                        onClicked: {
-                            originalEdit.text = study.currentSentence.text
-                            translationEdit.text = study.currentSentence.translation || study.currentSentence.analysis.translation || ""
-                            startEdit.text = String(study.currentSentence.start)
-                            endEdit.text = String(study.currentSentence.end)
-                            editPopup.open()
-                        }
-                    }
+                    anchors.right: parent.right; anchors.rightMargin: 16; y: 42; spacing: 8
+                    Text { visible: transport.width >= 790; text: "音量"; color: "#748178"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+                    Slider { width: transport.width >= 790 ? 100 : 65; height: 28; value: sound.volume; onMoved: sound.volume = value }
+                    Text { text: Math.round(sound.volume * 100) + "%"; color: "#748178"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
                 }
-                Row {
-                    anchors.right: parent.right; anchors.rightMargin: 20; y: 76; spacing: 5
-                    Text { text: "音量"; color: "#69766D"; font.family: "Microsoft YaHei UI"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
-                    Slider { id: volumeSlider; width: 94; height: 24; from: 0; to: 1
-                        value: sound.volume; onMoved: sound.volume = value
-                        background: Rectangle { x: volumeSlider.leftPadding
-                            y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2
-                            width: volumeSlider.availableWidth; height: 4; radius: 2; color: "#E2E8E3"
-                            Rectangle { width: volumeSlider.visualPosition * parent.width; height: parent.height
-                                radius: 2; color: "#C94859" } }
-                        handle: Rectangle { x: volumeSlider.leftPadding + volumeSlider.visualPosition * (volumeSlider.availableWidth - width)
-                            y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2
-                            width: 14; height: 14; radius: 7; color: "#C94859"; border.color: "#FFFFFF"; border.width: 2 }
+            }
+            Item {
+                objectName: "videoDivider"
+                x: 0; y: mediaFrame.height; width: parent.width; height: 16
+                Rectangle { anchors.centerIn: parent; width: 44; height: 4; radius: 2; color: "#BDC6BF" }
+                MouseArea { anchors.fill: parent; cursorShape: Qt.SplitVCursor
+                    onReleased: settings.savePlayerPreferences(root.highlightDelayMs, Math.round(root.videoHeight))
+                    onPositionChanged: function(mouse) {
+                        if (pressed) root.videoHeight = Math.max(120, Math.min(leftPane.height - 240, mapToItem(leftPane, mouse.x, mouse.y).y))
                     }
-                    Text { anchors.verticalCenter: parent.verticalCenter; width: 28
-                        text: Math.round(sound.volume * 100) + "%"; color: "#69766D"; font.pixelSize: 11 }
                 }
             }
 
             Rectangle {
                 id: readingPane
-                x: 0; y: mediaFrame.height + 12
+                objectName: "readingPane"
+                x: 0; y: mediaFrame.height + 16
                 width: parent.width; height: Math.max(0, transport.y - y - 12)
                 visible: study.hasMedia
                 radius: 10; color: "#FFFFFF"; border.color: "#DFE4E0"
@@ -457,61 +619,87 @@ ApplicationWindow {
                     text: "转写整段或导入字幕后，在这里逐句阅读。"
                     color: "#8B978E"; font.family: "Microsoft YaHei UI"; font.pixelSize: 15
                 }
+                RowLayout {
+                    x: 16; y: 5; width: parent.width - 32; height: 30
+                    Text { text: "字幕  ·  " + study.sentenceCount + " 句"; color: "#26342C"; font.pixelSize: 13; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                    AppButton { text: readingList.followPlayback ? "跟随播放" : "回到当前句"; flat: readingList.followPlayback; implicitHeight: 26; onClicked: readingList.returnToCurrent() }
+                    Text { visible: readingPane.width >= 790; text: "高亮延迟"; color: "#8C9790"; font.pixelSize: 11 }
+                    AppCombo {
+                        objectName: "highlightDelayChoice"
+                        implicitWidth: 104; implicitHeight: 26
+                        model: ["0 毫秒", "100 毫秒", "200 毫秒", "300 毫秒", "400 毫秒", "600 毫秒"]
+                        currentIndex: [0, 100, 200, 300, 400, 600].indexOf(root.highlightDelayMs)
+                        onActivated: settings.savePlayerPreferences([0, 100, 200, 300, 400, 600][currentIndex], Math.round(root.videoHeight))
+                    }
+                    AppButton { text: "翻译本句"; implicitHeight: 26
+                        enabled: !study.busy && !study.enriching && study.sentenceCount > 0
+                        onClicked: study.startTranslation(false) }
+                    AppButton { text: study.contentLanguage === "en" ? "解释本句" : "解析本句"; implicitHeight: 26
+                        enabled: !study.busy && !study.enriching && study.sentenceCount > 0
+                        onClicked: study.startEnrichment(false) }
+                }
                 ListView {
                     id: readingList
                     objectName: "readingList"
-                    anchors.fill: parent; anchors.margins: 1
+                    x: 1; y: 38; width: parent.width - 2; height: parent.height - 39
                     clip: true; model: study.segments
                     property int trackedIndex: -1
+                    property bool followPlayback: true
+                    onMovementStarted: followPlayback = false
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; width: 8; onPressedChanged: if (pressed) readingList.followPlayback = false }
                     boundsBehavior: Flickable.StopAtBounds
                     spacing: 6
-                    onCountChanged: Qt.callLater(scrollToActive)
+                    onCountChanged: if (followPlayback) Qt.callLater(scrollToActive)
                     Connections {
                         target: study
-                        function onStateChanged() { Qt.callLater(readingList.scrollToActive) }
+                        function onStateChanged() { if (readingList.followPlayback && readingList.trackedIndex !== root.highlightedSentenceIndex) Qt.callLater(readingList.scrollToActive) }
                         function onSegmentsChanged() {
                             readingList.trackedIndex = -1
-                            Qt.callLater(readingList.scrollToActive)
+                            if (readingList.followPlayback) Qt.callLater(readingList.scrollToActive)
                         }
+                        function onMediaChanged() { readingList.returnToCurrent() }
                     }
+                    function returnToCurrent() { followPlayback = true; Qt.callLater(scrollToActive) }
+                    MouseArea { anchors.fill: parent; acceptedButtons: Qt.NoButton; onWheel: function(wheel) { readingList.followPlayback = false; wheel.accepted = false } }
                     function scrollToActive() {
                         if (count === 0 || study.activeIndex < 0) { trackedIndex = -1; return }
-                        trackedIndex = study.activeIndex
+                        trackedIndex = root.highlightedSentenceIndex
                         forceLayout()
-                        positionViewAtIndex(trackedIndex, ListView.Beginning)
+                        var card = itemAtIndex(trackedIndex)
+                        if (!card || card.y < contentY + 4 || card.y + card.height > contentY + height - 4) positionViewAtIndex(trackedIndex, ListView.Beginning)
                     }
                     delegate: Rectangle {
                         id: readingCard
                         required property int index
                         required property var modelData
-                        property bool active: index === study.activeIndex
-                        property bool hasNotes: modelData.analysis.grammar.length > 0 || modelData.analysis.vocabulary.length > 0
+                        property bool active: index === root.highlightedSentenceIndex
+                        property bool hasNotes: (modelData.analysis.grammar || "").length > 0 || (modelData.analysis.vocabulary || []).length > 0
                         width: readingList.width - 16
                         height: Math.max(105, (active && hasNotes ? analysisFooter.y + 16
-                                      : translationLabel.y + translationLabel.height + 19))
+                                      : translationLabel.y + translationLabel.height + 14))
                         x: 8; radius: 10
-                        color: active ? "#F2F2F0" : "#FFFFFF"
-                        border.color: active ? "#E6E8E5" : "#F1F2F0"
+                        color: active ? Qt.tint(root.surfaceColor, Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.045)) : root.surfaceColor
+                        border.color: active ? Qt.tint(root.surfaceColor, Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.22)) : "#F1F2F0"
                         Behavior on color { ColorAnimation { duration: 240 } }
                         Rectangle {
                             width: 3; height: parent.height - 18; y: 9; radius: 2
-                            color: readingCard.active ? "#C94859" : "transparent"
+                            color: readingCard.active ? root.accentColor : "transparent"
                             Behavior on color { ColorAnimation { duration: 240 } }
                         }
                         Text {
                             x: 18; y: 13
                             text: root.timeText(readingCard.modelData.start * 1000)
-                            color: readingCard.active ? "#B63D50" : "#96A098"
+                            color: readingCard.active ? root.accentColor : "#96A098"
                             font.family: "Segoe UI"; font.pixelSize: 11
                         }
                         Text {
-                            anchors.right: parent.right; anchors.rightMargin: readingCard.active ? 104 : 18; y: 13
+                            anchors.right: parent.right; anchors.rightMargin: 18; y: 13
                             text: (readingCard.index + 1) + " / " + study.sentenceCount
                             color: "#A0A9A2"; font.family: "Segoe UI"; font.pixelSize: 11
                         }
                          Item {
                              id: textBlock
-                             x: 18; y: readingCard.active ? 49 : 27
+                             x: 18; y: 31
                              width: parent.width - 36
                              height: root.textHidden || readingCard.modelData.tokens.length === 0
                                      ? plainText.contentHeight : tokenFlow.childrenRect.height
@@ -523,21 +711,23 @@ ApplicationWindow {
                                     model: readingCard.modelData.tokens
                                     delegate: Rectangle {
                                         property bool spoken: readingCard.active && modelData.start !== undefined
-                                            && player.position / 1000 >= modelData.start
-                                            && player.position / 1000 < modelData.end
+                                            && root.highlightSeconds >= modelData.start
+                                            && root.highlightSeconds < modelData.end
                                         width: Math.max(wordText.implicitWidth, rubyText.implicitWidth) + 7
-                                        height: 43; radius: 4
-                                        color: spoken ? "#FBE0E5" : "transparent"
+                                        height: study.contentLanguage === "en" ? 31 : 43; radius: 4
+                                        color: "transparent"
+                                        border.width: spoken ? 1.5 : 0
+                                        border.color: root.accentColor
                                         Text {
                                             id: rubyText; anchors.horizontalCenter: parent.horizontalCenter; y: 0
                                             text: modelData.reading; color: "#68736C"
                                             font.family: "Yu Gothic UI"; font.pixelSize: 11
                                         }
                                         Text {
-                                            id: wordText; anchors.horizontalCenter: parent.horizontalCenter; y: 13
+                                            id: wordText; anchors.horizontalCenter: parent.horizontalCenter; y: study.contentLanguage === "en" ? 2 : 13
                                             text: modelData.text
-                                            color: parent.spoken ? "#B9384B" : "#202C25"
-                                            font.family: "Yu Gothic UI"; font.pixelSize: 24; font.weight: Font.DemiBold
+                                            color: "#202C25"
+                                            font.family: "Yu Gothic UI"; font.pixelSize: 21; font.weight: Font.Bold
                                         }
                                         Rectangle {
                                             anchors.bottom: parent.bottom; width: parent.width - 2; height: 4; radius: 2
@@ -553,19 +743,19 @@ ApplicationWindow {
                                 text: root.textHidden ? "原文已隐藏" : readingCard.modelData.text
                                  wrapMode: Text.Wrap
                                 color: root.textHidden ? "#89948D" : "#202C25"
-                                font.family: "Yu Gothic UI"; font.pixelSize: 24; font.weight: Font.DemiBold
+                                font.family: "Yu Gothic UI"; font.pixelSize: 21; font.weight: Font.Bold
                             }
                         }
                          Text {
                              id: translationLabel
-                             x: 18; y: textBlock.y + textBlock.height + 9
+                             x: 18; y: textBlock.y + textBlock.height + 5
                              width: parent.width - 36; height: contentHeight
                             text: readingCard.modelData.translation || (readingCard.modelData.analysis.translation
                                   ? "机译 · " + readingCard.modelData.analysis.translation
                                   : (readingCard.active ? "未添加中文释义" : ""))
                              wrapMode: Text.Wrap
                             color: readingCard.modelData.translation || readingCard.modelData.analysis.translation ? "#536056" : "#A0AAA1"
-                            font.family: "Microsoft YaHei UI"; font.pixelSize: 14
+                            font.family: "Microsoft YaHei UI"; font.pixelSize: 13
                         }
                          Text {
                              id: grammarLabel
@@ -581,7 +771,7 @@ ApplicationWindow {
                              x: 18; y: grammarLabel.y + grammarLabel.height + 7; width: parent.width - 36
                              height: visible ? contentHeight : 0
                             visible: readingCard.active && readingCard.hasNotes
-                            text: readingCard.modelData.analysis.vocabulary.map(function(item) {
+                            text: (readingCard.modelData.analysis.vocabulary || []).map(function(item) {
                                 return item.surface + "：" + item.meaning
                             }).join("   ·   ")
                              color: "#69766D"; wrapMode: Text.Wrap
@@ -592,22 +782,22 @@ ApplicationWindow {
                             anchors.right: parent.right; anchors.rightMargin: 18
                              y: vocabularyLabel.y + vocabularyLabel.height + 7
                             visible: readingCard.active && readingCard.hasNotes
-                            text: readingCard.modelData.analysis.model === "manual" ? "已手动校对" : "本地模型生成 · 待校对"
+                            text: readingCard.modelData.analysis.model === "manual" ? "已手动校对" : "AI 生成 · 待校对"
                             color: "#9AA49D"; font.family: "Microsoft YaHei UI"; font.pixelSize: 10
                         }
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                            onClicked: study.chooseSentence(readingCard.index)
+                            onClicked: { readingList.followPlayback = true; study.chooseSentence(readingCard.index); Qt.callLater(readingList.scrollToActive) }
                         }
                         Row {
                             z: 1; anchors.right: parent.right; anchors.rightMargin: 12; y: 7
-                            spacing: 5; visible: readingCard.active && !study.enriching
+                            spacing: 5; visible: false
                             ActionButton {
                                 visible: readingCard.hasNotes
                                 label: "校对解析"; enabled: !study.busy
                                 onClicked: {
                                     analysisGrammarEdit.text = readingCard.modelData.analysis.grammar
-                                    analysisVocabularyEdit.text = readingCard.modelData.analysis.vocabulary.map(function(item) {
+                                    analysisVocabularyEdit.text = (readingCard.modelData.analysis.vocabulary || []).map(function(item) {
                                         return item.surface + "：" + item.meaning
                                     }).join("\n")
                                     analysisPopup.open()
@@ -627,57 +817,7 @@ ApplicationWindow {
             }
         }
 
-        Rectangle {
-            id: transcriptPane
-            visible: root.page === "listen" && root.showList && study.hasMedia
-            anchors.top: parent.top; anchors.right: parent.right; anchors.bottom: parent.bottom
-            width: 296; radius: 10; color: "#FFFFFF"; border.color: "#DFE4E0"
-            Text {
-                x: 18; y: 17; text: "字幕"; color: "#27372C"
-                font.family: "Microsoft YaHei UI"; font.pixelSize: 15; font.weight: Font.DemiBold
-            }
-            Text {
-                anchors.right: parent.right; anchors.rightMargin: 18; y: 20
-                text: study.sentenceCount + " 句"; color: "#8A968D"
-                font.family: "Microsoft YaHei UI"; font.pixelSize: 11
-            }
-            Rectangle { x: 0; y: 53; width: parent.width; height: 1; color: "#EEF0EE" }
-            Text {
-                x: 20; y: 80; width: parent.width - 40; visible: study.sentenceCount === 0
-                text: study.hasMedia ? "转写整段或导入已有字幕。" : "打开文件后显示字幕。"
-                color: "#8A968D"; wrapMode: Text.Wrap
-                font.family: "Microsoft YaHei UI"; font.pixelSize: 13
-            }
-            ListView {
-                id: sentenceList
-                x: 1; y: 54; width: parent.width - 2; height: parent.height - 55
-                clip: true; model: study.segments
-                currentIndex: study.activeIndex
-                onCurrentIndexChanged: if (count > 0) positionViewAtIndex(currentIndex, ListView.Contain)
-                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                delegate: Rectangle {
-                    width: sentenceList.width; height: 75
-                    color: index === study.activeIndex ? "#FBECEF" : itemHover.containsMouse ? "#F7F8F7" : "#FFFFFF"
-                    Rectangle { width: 3; height: parent.height; color: index === study.activeIndex ? "#C94859" : "transparent" }
-                    Text {
-                        x: 16; y: 11; text: root.timeText(modelData.start * 1000)
-                        color: index === study.activeIndex ? "#B53D50" : "#8A968D"
-                        font.family: "Segoe UI"; font.pixelSize: 11
-                    }
-                    Text {
-                        x: 16; y: 31; width: parent.width - 32; height: 34
-                        text: modelData.text; elide: Text.ElideRight; wrapMode: Text.NoWrap
-                        color: "#26332A"; font.family: "Yu Gothic UI"; font.pixelSize: 14
-                    }
-                    Rectangle { anchors.bottom: parent.bottom; x: 15; width: parent.width - 30; height: 1; color: "#F0F2F0" }
-                    MouseArea {
-                        id: itemHover; anchors.fill: parent; hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: study.chooseSentence(index)
-                    }
-                }
-            }
-        }
+
     }
 
     Popup {
@@ -689,7 +829,7 @@ ApplicationWindow {
         contentItem: ColumnLayout {
             spacing: 9
             Text { text: "校对当前句"; color: "#27372C"; font.family: "Microsoft YaHei UI"; font.pixelSize: 18; font.weight: Font.DemiBold }
-            Text { text: "日文原文"; color: "#69766D"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12 }
+            Text { text: study.contentLanguage === "en" ? "英语原文" : "日文原文"; color: "#69766D"; font.family: "Microsoft YaHei UI"; font.pixelSize: 12 }
             TextArea {
                 id: originalEdit; Layout.fillWidth: true; Layout.preferredHeight: 91
                 wrapMode: TextEdit.Wrap; font.family: "Yu Gothic UI"; font.pixelSize: 18
@@ -759,7 +899,8 @@ ApplicationWindow {
         }
     }
 
-    Shortcut { sequence: "Space"; enabled: !editPopup.visible && !analysisPopup.visible && study.hasMedia; onActivated: player.playbackState === MediaPlayer.PlayingState ? player.pause() : player.play() }
-    Shortcut { sequence: "Ctrl+Left"; enabled: !editPopup.visible && !analysisPopup.visible; onActivated: study.chooseSentence(study.activeIndex - 1) }
-    Shortcut { sequence: "Ctrl+Right"; enabled: !editPopup.visible && !analysisPopup.visible; onActivated: study.chooseSentence(study.activeIndex + 1) }
+    Shortcut { sequence: settings.values.shortcut_play; enabled: root.listeningKeysEnabled; onActivated: player.playbackState === MediaPlayer.PlayingState ? player.pause() : player.play() }
+    Shortcut { sequence: settings.values.shortcut_previous; enabled: root.listeningKeysEnabled && study.activeIndex > 0; onActivated: study.chooseSentence(study.activeIndex - 1) }
+    Shortcut { sequence: settings.values.shortcut_next; enabled: root.listeningKeysEnabled && study.activeIndex + 1 < study.sentenceCount; onActivated: study.chooseSentence(study.activeIndex + 1) }
+    Shortcut { sequence: settings.values.shortcut_loop; enabled: root.listeningKeysEnabled && study.sentenceCount > 0; onActivated: study.toggleLoop() }
 }

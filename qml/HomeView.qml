@@ -12,6 +12,7 @@ Item {
     signal openWriting()
     property color ink: "#26342C"
     property color muted: "#748178"
+    property color themeAccent: "#C94859"
 
     function recentMedia(video) {
         var result = []
@@ -34,7 +35,13 @@ Item {
         anchors.fill: parent; clip: true
         contentWidth: width; contentHeight: contentColumn.height + 32
         boundsBehavior: Flickable.StopAtBounds
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        ScrollBar.vertical: ScrollBar {
+            id: homeScroll
+            policy: ScrollBar.AsNeeded; width: 8
+            background: Item { }
+            contentItem: Rectangle { implicitWidth: 6; radius: 3
+                color: homeScroll.pressed ? "#87998C" : "#B8C7BC" }
+        }
         Column {
             id: contentColumn
             x: 10; y: 8; width: parent.width - 20; spacing: 18
@@ -42,8 +49,13 @@ Item {
             Rectangle {
                 width: parent.width; height: downloads.ready ? 276 : 132
                 radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
+                Image {
+                    x: 8; y: 7; width: 116; height: 116
+                    source: "../assets/doraemon-reading.png"
+                    fillMode: Image.PreserveAspectFit; smooth: true
+                }
                 Column {
-                    x: 22; y: 18; width: parent.width - 44; spacing: 10
+                    x: 133; y: 18; width: parent.width - 155; spacing: 10
                     Text { text: "添加音视频"; color: home.ink; font.pixelSize: 18
                         font.family: "Microsoft YaHei UI"; font.weight: Font.DemiBold }
                     RowLayout {
@@ -52,7 +64,7 @@ Item {
                             id: linkField; Layout.fillWidth: true; Layout.preferredHeight: 39
                             placeholderText: "粘贴 B 站视频链接"
                             font.family: "Microsoft YaHei UI"; font.pixelSize: 13
-                            background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: linkField.activeFocus ? "#C94859" : "#DDE2DF" }
+                            background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: linkField.activeFocus ? home.themeAccent : "#DDE2DF" }
                             onTextEdited: downloads.clearPreview()
                             onAccepted: downloads.inspect(text)
                         }
@@ -99,7 +111,7 @@ Item {
                     }
                 }
                 Rectangle { visible: downloads.downloading; anchors.bottom: parent.bottom
-                    width: parent.width * downloads.progress; height: 3; color: "#C94859" }
+                    width: parent.width * downloads.progress; height: 3; color: home.themeAccent }
             }
 
             Flow {
@@ -133,7 +145,7 @@ Item {
                                         color: modelData.available ? home.muted : "#B64052"; font.pixelSize: 11 }
                                     Rectangle { y: 159; width: parent.width; height: 3; radius: 2; color: "#E8ECE9"
                                         Rectangle { width: parent.width * modelData.progress; height: parent.height
-                                            radius: 2; color: "#C94859" } }
+                                            radius: 2; color: home.themeAccent } }
                                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                         enabled: modelData.available; onClicked: home.openProject(modelData.path) }
                                 }
@@ -156,7 +168,7 @@ Item {
                                     width: parent.width; height: 48; radius: 7
                                     color: audioHover.containsMouse ? "#F5F7F5" : "#FAFBFA"
                                     Text { x: 10; anchors.verticalCenter: parent.verticalCenter; text: "♫"
-                                        color: "#C94859"; font.pixelSize: 19 }
+                                        color: home.themeAccent; font.pixelSize: 19 }
                                     Text { x: 40; y: 6; width: parent.width - 140; text: modelData.title
                                         elide: Text.ElideRight; color: home.ink; font.pixelSize: 12 }
                                     Text { anchors.right: parent.right; anchors.rightMargin: 10; y: 6
@@ -164,7 +176,7 @@ Item {
                                         color: modelData.available ? home.muted : "#B64052"; font.pixelSize: 11 }
                                     Rectangle { x: 40; y: 37; width: parent.width - 50; height: 3; radius: 2; color: "#E8ECE9"
                                         Rectangle { width: parent.width * modelData.progress; height: parent.height
-                                            radius: 2; color: "#C94859" } }
+                                            radius: 2; color: home.themeAccent } }
                                     MouseArea { id: audioHover; anchors.fill: parent; hoverEnabled: true
                                         enabled: modelData.available; cursorShape: Qt.PointingHandCursor
                                         onClicked: home.openProject(modelData.path) }

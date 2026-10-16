@@ -5,6 +5,7 @@ import QtQuick.Layouts
 Item {
     id: library
     signal openProject(string path)
+    property color themeAccent: "#C94859"
     property string folder: "all"
     property string kind: "全部"
     property string progressFilter: "全部"
@@ -63,11 +64,12 @@ Item {
                                     {key:"favorites", label:"收藏夹", icon:"★"}]
                             delegate: Rectangle {
                                 required property var modelData
+                                objectName: "libraryFolder_" + modelData.key
                                 width: parent.width; height: 42; radius: 7
-                                color: library.folder === modelData.key ? "#FBE9ED"
-                                     : folderHover.containsMouse ? "#EEF2EE" : "transparent"
+                                color: library.folder === modelData.key ? settings.palette.selection
+                                     : folderHover.containsMouse ? settings.palette.page : "transparent"
                                 Text { x: 10; anchors.verticalCenter: parent.verticalCenter
-                                    text: modelData.icon; color: "#BD4657"; font.pixelSize: 15 }
+                                    text: modelData.icon; color: library.themeAccent; font.pixelSize: 15 }
                                 Text { x: 35; anchors.verticalCenter: parent.verticalCenter
                                     text: modelData.label; color: "#344239"; font.pixelSize: 13
                                     font.weight: library.folder === modelData.key ? Font.DemiBold : Font.Normal }
@@ -79,9 +81,6 @@ Item {
                                     onClicked: library.folder = modelData.key }
                             }
                         }
-                        Text { width: parent.width - 10; leftPadding: 8; topPadding: 12
-                            text: "归类只整理资料库，\n不会修改字幕语言。"
-                            color: "#8A958D"; font.pixelSize: 11; lineHeight: 1.35 }
                     }
                 }
                 Item {
@@ -104,23 +103,40 @@ Item {
                             color: rowHover.containsMouse ? "#F6F8F6" : "#FAFBFA"
                             border.color: "#EDF0ED"
                             Rectangle { x: 10; y: 11; width: 62; height: 58; radius: 5
-                                color: modelData.video ? "#E4E9E6" : "#F0E7E8"; clip: true
+                                color: modelData.video ? "#E4E9E6" : settings.palette.selection; clip: true
                                 Image { id: cover; anchors.fill: parent; source: modelData.coverUrl
                                     fillMode: Image.PreserveAspectCrop; visible: status === Image.Ready }
                                 Text { anchors.centerIn: parent; text: modelData.video ? "▶" : "♫"
-                                    color: "#C94859"; font.pixelSize: 20; visible: cover.status !== Image.Ready }
+                                    color: library.themeAccent; font.pixelSize: 20; visible: cover.status !== Image.Ready }
                             }
                             Text { x: 84; y: 9; width: Math.max(80, parent.width - 320)
                                 text: modelData.title; elide: Text.ElideRight
                                 color: "#29362E"; font.pixelSize: 13; font.weight: Font.DemiBold }
-                            Text { x: 84; y: 34; width: Math.max(80, parent.width - 320)
-                                text: modelData.libraryLanguage + " · " + (modelData.video ? "视频" : "音频")
-                                      + " · " + modelData.state + (modelData.available ? "" : " · 源文件已丢失")
+                            Text { id: languageLabel; x: 84; y: 34; z: 2
+                                text: modelData.libraryLanguage + " ⌄"
+                                color: languageHover.containsMouse ? "#405F4B" : "#77857B"
+                                font.pixelSize: 11
+                                MouseArea { id: languageHover; anchors.fill: parent; z: 2
+                                    hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: languageMenu.popup() }
+                                ToolTip.visible: languageHover.containsMouse
+                                ToolTip.text: "点击修改资料库分类"
+                            }
+                            Text { x: languageLabel.x + languageLabel.width + 5; y: 34
+                                width: Math.max(40, parent.width - x - 96)
+                                text: "· " + (modelData.video ? "视频" : "音频") + " · " + modelData.state
+                                      + (modelData.available ? "" : " · 源文件已丢失")
                                 elide: Text.ElideRight; color: "#77857B"; font.pixelSize: 11 }
+                            Menu { id: languageMenu; x: 84; y: 54; z: 3
+                                MenuItem { text: "归入日语"; enabled: modelData.libraryLanguage !== "日语"
+                                    onTriggered: study.setProjectLibraryLanguage(modelData.path, "ja") }
+                                MenuItem { text: "归入英语"; enabled: modelData.libraryLanguage !== "英语"
+                                    onTriggered: study.setProjectLibraryLanguage(modelData.path, "en") }
+                            }
                             Rectangle { x: 84; y: 70; width: Math.max(40, parent.width - 101)
                                 height: 3; radius: 2; color: "#E9EDE9"
                                 Rectangle { width: parent.width * modelData.progress; height: parent.height
-                                    radius: 2; color: "#C94859" } }
+                                    radius: 2; color: library.themeAccent } }
                             MouseArea { id: rowHover; anchors.fill: parent; hoverEnabled: true
                                 enabled: modelData.available; cursorShape: Qt.PointingHandCursor
                                 onClicked: library.openProject(modelData.path) }
@@ -134,14 +150,9 @@ Item {
                                     library.pendingDeleteTitle = modelData.title
                                     deleteConfirm.open()
                                 } }
-                            AppCombo { x: parent.width - 228; y: 44; width: 132; height: 30; z: 2
-                                model: ["归入日语", "归入英语"]
-                                currentIndex: modelData.libraryLanguage === "英语" ? 1 : 0
-                                onActivated: study.setProjectLibraryLanguage(modelData.path,
-                                                                             currentIndex === 1 ? "en" : "ja") }
-                            Text { x: parent.width - 86; y: 50; width: 75
+                            Text { x: parent.width - 86; y: 34; width: 75
                                 text: modelData.available ? "打开 ›" : "不可打开"
-                                color: modelData.available ? "#B84153" : "#A06970"
+                                color: modelData.available ? library.themeAccent : "#A06970"
                                 font.pixelSize: 11; horizontalAlignment: Text.AlignRight }
                         }
                     }
@@ -176,7 +187,7 @@ Item {
                 color: "#77857A"; font.pixelSize: 12 }
             Row { spacing: 9; anchors.right: parent.right
                 AppButton { text: "取消"; width: 82; onClicked: deleteConfirm.close() }
-                AppButton { text: "移出资料库"; width: 108; primary: true
+                AppButton { text: "移出资料库"; width: 108; primary: true; destructive: true
                     onClicked: { study.deleteProject(library.pendingDelete); deleteConfirm.close() } }
             }
         }

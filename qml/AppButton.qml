@@ -4,6 +4,9 @@ import QtQuick.Controls
 Button {
     id: button
     property bool primary: false
+    property bool destructive: false
+    property color accent: settings.palette.accent
+    property color primaryColor: destructive ? "#C94859" : accent
     implicitWidth: Math.max(68, label.implicitWidth + 24)
     implicitHeight: 36
     hoverEnabled: true
@@ -15,9 +18,9 @@ Button {
     }
     background: Rectangle {
         radius: 8
-        color: !button.enabled ? "#F1F3F1" : button.primary ? (button.hovered ? "#B73C4F" : "#C94859")
+        color: !button.enabled ? "#F1F3F1" : button.primary ? (button.hovered ? Qt.darker(button.primaryColor, 1.12) : button.primaryColor)
              : button.flat ? (button.hovered ? "#F1F4F1" : "transparent")
              : button.hovered ? "#EEF1EE" : "#FFFFFF"
-        border.color: button.flat ? "transparent" : button.primary ? "#C94859" : "#DDE3DD"
+        border.color: button.flat ? "transparent" : button.primary ? button.primaryColor : "#DDE3DD"
     }
 }

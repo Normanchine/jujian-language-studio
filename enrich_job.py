@@ -124,9 +124,12 @@ def explain(text: str, language: str = "ja") -> dict:
         f"原句：{text}"
     )
     from model_settings import read_settings
-    if read_settings()["analysis_backend"] == "cloud":
+    settings = read_settings()
+    if settings["analysis_backend"] == "cloud":
         from ai_client import ask_json
-        return validate_analysis(ask_json(prompt, "analysis", 768), text, language)
+        analysis = validate_analysis(ask_json(prompt, "analysis", 768), text, language)
+        analysis["model"] = settings["cloud_model"]
+        return analysis
     for attempt, token_limit in enumerate((384, 768)):
         payload = json.dumps({
             "model": MODEL, "prompt": prompt, "format": SCHEMA,

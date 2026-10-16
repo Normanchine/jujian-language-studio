@@ -23,8 +23,8 @@ def merge_english_pauses(segments: list[dict]) -> list[dict]:
             short_fragment = len(segment["text"].split()) <= 2
             if (not re.search(r"[.!?][\"')\]]?$", previous["text"].rstrip())
                     and 0 <= gap <= 2.5
-                    and segment["end"] - previous["start"] <= 35
-                    and len(previous["text"]) + len(segment["text"]) <= 280
+                    and segment["end"] - previous["start"] <= 14
+                    and len(previous["text"]) + len(segment["text"]) <= 180
                     and (continuation or short_fragment)):
                 previous["text"] = (previous["text"].rstrip() + " " + segment["text"].lstrip()).strip()
                 previous["end"] = segment["end"]
@@ -87,6 +87,8 @@ def main(args: list[str] | None = None) -> int:
     raw_segments = segments
     if detected_language == "en":
         segments = merge_english_pauses(segments)
+        from subtitle_split import split_segments
+        segments, _ = split_segments(segments, "en", use_model=False)
     output.write_text(json.dumps({
         "source": media.name, "model": "small", "device": device, "language": detected_language,
         "review_status": "machine_generated_unchecked", "segments": segments,

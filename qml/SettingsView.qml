@@ -5,14 +5,89 @@ import QtQuick.Layouts
 
 Item {
     id: settingsPage
+    component ShortcutField: TextField {
+        id: keyField
+        property string sequence: ""
+        implicitWidth: 165; implicitHeight: 36
+        readOnly: true; text: activeFocus ? "请按快捷键…" : sequence
+        selectByMouse: false
+        background: Rectangle { radius: 9; color: keyField.activeFocus ? "#EAF2EC" : "#F8FAF8"
+            border.color: keyField.activeFocus ? "#4E8068" : "#DEE4DE" }
+        Keys.onPressed: function(event) {
+            event.accepted = true
+            if (event.key === Qt.Key_Escape) { focus = false; return }
+            var value = settings.keySequence(event.key, event.modifiers)
+            if (value.length) { sequence = value; focus = false }
+        }
+    }
     FolderDialog { id: folderPicker; title: "选择下载目录"
         onAccepted: folderField.text = settings.localFolder(selectedFolder.toString()) }
     Flickable {
-        anchors.fill: parent; contentWidth: width; contentHeight: panel.height + 24
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        anchors.fill: parent; clip: true; contentWidth: width; contentHeight: panel.height + 24
+        ScrollBar.vertical: ScrollBar {
+            id: settingsScroll
+            policy: ScrollBar.AsNeeded; width: 8
+            background: Item { }
+            contentItem: Rectangle { implicitWidth: 6; radius: 3
+                color: settingsScroll.pressed ? "#87998C" : "#B8C7BC" }
+        }
         Rectangle { id: panel; x: 4; y: 4; width: parent.width - 8; height: settingsColumn.height + 38
             color: "#FFFFFF"; radius: 10; border.color: "#DFE4E0"
             Column { id: settingsColumn; x: 22; y: 19; width: parent.width - 44; spacing: 13
+                Text { text: "外观"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D" }
+                Flow {
+                    width: parent.width; spacing: 10
+                    Repeater {
+                        model: settings.themeOptions
+                        delegate: Rectangle {
+                            id: themeOption
+                            required property var modelData
+                            objectName: "themeOption_" + modelData.key
+                            width: Math.min(138, (settingsColumn.width - 30) / 4)
+                            height: 64; radius: 9; color: "#FFFFFF"
+                            border.width: settings.values.theme === modelData.key ? 2 : 1
+                            border.color: settings.values.theme === modelData.key ? modelData.accent : "#DEE4DE"
+                            Rectangle { x: 9; y: 9; width: parent.width - 18; height: 28; radius: 5
+                                color: themeOption.modelData.page
+                                Rectangle { width: 31; height: parent.height; radius: 5
+                                    color: themeOption.modelData.side }
+                                Rectangle { x: 39; y: 8; width: 28; height: 11; radius: 3
+                                    color: themeOption.modelData.accent }
+                            }
+                            Text { x: 10; y: 42; text: themeOption.modelData.name
+                                color: "#334039"; font.family: "Microsoft YaHei UI"; font.pixelSize: 11 }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                onClicked: settings.setTheme(themeOption.modelData.key) }
+                        }
+                    }
+                }
+                Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
+                Text { text: "精听快捷键"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D" }
+                Text { text: "点击输入框后按下快捷键，再保存。仅在精听页生效；输入文字时不会触发。"
+                    width: parent.width; wrapMode: Text.Wrap; color: "#78857A"; font.pixelSize: 12 }
+                GridLayout {
+                    columns: 4; columnSpacing: 12; rowSpacing: 10
+                    Text { text: "上一句"; color: "#4B5A50" }
+                    ShortcutField { id: previousKey; objectName: "previousShortcut"; sequence: settings.values.shortcut_previous }
+                    Text { text: "下一句"; color: "#4B5A50" }
+                    ShortcutField { id: nextKey; objectName: "nextShortcut"; sequence: settings.values.shortcut_next }
+                    Text { text: "播放 / 暂停"; color: "#4B5A50" }
+                    ShortcutField { id: playKey; sequence: settings.values.shortcut_play }
+                    Text { text: "循环本句"; color: "#4B5A50" }
+                    ShortcutField { id: loopKey; sequence: settings.values.shortcut_loop }
+                }
+                Row { spacing: 10
+                    AppButton { text: "保存快捷键"
+                        onClicked: settings.saveShortcuts(previousKey.sequence, nextKey.sequence, playKey.sequence, loopKey.sequence) }
+                    AppButton { text: "恢复默认快捷键"
+                        onClicked: {
+                            previousKey.sequence = "Ctrl+Left"; nextKey.sequence = "Ctrl+Right"
+                            playKey.sequence = "Space"; loopKey.sequence = "Ctrl+L"
+                            settings.saveShortcuts("Ctrl+Left", "Ctrl+Right", "Space", "Ctrl+L")
+                        } }
+                }
+                Text { text: settings.status; color: "#748178"; font.pixelSize: 12; width: parent.width; wrapMode: Text.Wrap }
+                Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
                 Text { text: "下载"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D" }
                 RowLayout { width: parent.width; height: 38
                     TextField { id: folderField; Layout.fillWidth: true; placeholderText: "下载文件保存目录"

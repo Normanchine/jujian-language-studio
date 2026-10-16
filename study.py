@@ -9,6 +9,7 @@ import shutil
 import sys
 import os
 import re
+import copy
 from threading import Event
 from bisect import bisect_right
 from datetime import datetime
@@ -19,6 +20,7 @@ import av
 from PySide6.QtCore import QObject, Property, QProcess, QThread, QUrl, Signal, Slot
 
 from enrich_job import MODEL, TRANSLATION_MODEL, ModelResponseError, explain, translate, validate_analysis
+from model_settings import read_settings
 from linguistics import display_tokens
 
 
@@ -98,7 +100,11 @@ class EnrichmentThread(QThread):
                 return
             try:
                 if job["task"] == "translation":
-                    analysis = {"_task": "translation", "translation": translate(job["text"], job["language"])}
+                    route = read_settings()
+                    model = (route["cloud_model"] if route["translation_backend"] == "cloud"
+                             else TRANSLATION_MODEL)
+                    analysis = {"_task": "translation", "translation": translate(job["text"], job["language"]),
+                                "translation_model": model}
                 else:
                     analysis = explain(job["text"], job["language"])
             except ModelResponseError as exc:
@@ -112,6 +118,31 @@ class EnrichmentThread(QThread):
 
     def stop(self) -> None:
         self._stop_requested.set()
+
+
+class SegmentationThread(QThread):
+    ready = Signal(list, dict)
+    failed = Signal(str)
+    progress = Signal(int, int)
+
+    def __init__(self, segments, language):
+        super().__init__()
+        self.segments = copy.deepcopy(segments)
+        self.language = language
+        self.cancelled = Event()
+
+    def run(self):
+        from subtitle_split import split_segments
+        from model_settings import read_settings
+        try:
+            routes = read_settings()
+            segments, audit = split_segments(self.segments, self.language,
+                use_model=routes["analysis_backend"] == "local",
+                translate_new=routes["translation_backend"] == "local",
+                progress=lambda done, total: self.progress.emit(done, total), cancelled=self.cancelled.is_set)
+            self.ready.emit(segments, audit)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.failed.emit(str(exc))
 
 
 class StudyBridge(QObject):
@@ -138,8 +169,12 @@ class StudyBridge(QObject):
         self._enrich_failed = 0
         self._enriching = False
         self._enrich_task = "analysis"
+        self._enrich_source = "本地"
         self._transcribe_language = "auto"
         self._projects: list[dict] = []
+        self._split_thread = None
+        self._splitting = False
+        self._playback_position_ms = 0
         self.refreshProjects()
 
     def _project_path(self, media: Path) -> Path:
@@ -169,7 +204,10 @@ class StudyBridge(QObject):
                 media = Path(project["media_path"])
                 duration = max(0, round(float(project.get("duration", 0)) * 1000))
                 position = max(0, min(int(project.get("playback_ms", 0)), duration))
-                if "playback_ms" not in project:
+                if project.get("playback_completed"):
+                    position = duration
+                    state = "已听完"
+                elif "playback_ms" not in project:
                     state = "未记录进度"
                 elif duration and position >= duration * 0.95:
                     state = "已听完"
@@ -328,10 +366,23 @@ class StudyBridge(QObject):
             return
         duration = self.durationMs
         position = max(0, min(position_ms, duration)) if duration else position_ms
+        # Qt may reset position to zero when natural playback stops.
+        if position == 0 and self._project.get("playback_completed"):
+            return
         if abs(position - int(self._project.get("playback_ms", 0))) < 1000:
             return
         self._project["playback_ms"] = position
+        self._project["playback_completed"] = bool(duration and position >= duration * 0.995)
         self._save()
+
+    @Slot()
+    def finishPlayback(self) -> None:
+        if not self._project_file:
+            return
+        self._project["playback_ms"] = self.durationMs
+        self._project["playback_completed"] = True
+        self._save()
+        self.refreshProjects()
 
     def _load_project(self, path: Path) -> None:
         project = json.loads(path.read_text(encoding="utf-8"))
@@ -442,6 +493,10 @@ class StudyBridge(QObject):
         return self._busy
 
     @Property(bool, notify=stateChanged)
+    def splitting(self) -> bool:
+        return self._splitting
+
+    @Property(bool, notify=stateChanged)
     def enriching(self) -> bool:
         return self._enriching
 
@@ -528,6 +583,7 @@ class StudyBridge(QObject):
 
     @Slot(int)
     def updatePlayback(self, position_ms: int) -> None:
+        self._playback_position_ms = position_ms
         segments = self._project.get("segments", [])
         if not segments:
             return
@@ -717,7 +773,10 @@ class StudyBridge(QObject):
         self._enrich_failed = 0
         self._enriching = True
         self._enrich_task = task
-        self._status = f"本地模型 {MODEL}：准备{'翻译' if task == 'translation' else '解析'} {len(jobs)} 句。"
+        route = read_settings()
+        self._enrich_source = "云端" if route[f"{task}_backend"] == "cloud" else "本地"
+        model = route["cloud_model"] if self._enrich_source == "云端" else MODEL
+        self._status = f"{self._enrich_source}模型 {model}：准备{'翻译' if task == 'translation' else '解析'} {len(jobs)} 句。"
         self.stateChanged.emit()
         self._enrich_thread.start()
 
@@ -732,20 +791,22 @@ class StudyBridge(QObject):
                     return
                 segments[index]["analysis"] = validate_analysis({
                     **previous, "translation": analysis["translation"],
-                    "translation_model": TRANSLATION_MODEL, "source_text": text,
+                    "translation_model": analysis["translation_model"], "source_text": text,
                 }, text, self._project.get("language", "ja"))
             else:
                 if previous.get("model") == "manual":
                     return
-                segments[index]["analysis"] = validate_analysis({
+                validated = validate_analysis({
                     **analysis, "translation": previous.get("translation", ""),
                     "translation_model": previous.get("translation_model", ""),
                 }, text, self._project.get("language", "ja"))
+                validated["model"] = analysis.get("model") or MODEL
+                segments[index]["analysis"] = validated
             self._enrich_done += 1
             self._save()
             self.segmentsChanged.emit()
             action = "翻译" if self._enrich_task == "translation" else "解析"
-            self._status = f"本地{action} {self._enrich_done} / {self._enrich_total} 句；生成内容待校对。"
+            self._status = f"{self._enrich_source}{action} {self._enrich_done} / {self._enrich_total} 句；生成内容待校对。"
             self.stateChanged.emit()
         except (UnicodeError, ValueError, KeyError, TypeError):
             pass
@@ -759,12 +820,12 @@ class StudyBridge(QObject):
         self._enriching = False
         action = "翻译" if self._enrich_task == "translation" else "解析"
         if code == 0:
-            self._status = (f"本地{action}完成 {self._enrich_done} 句，跳过 {self._enrich_failed} 句；"
+            self._status = (f"{self._enrich_source}{action}完成 {self._enrich_done} 句，跳过 {self._enrich_failed} 句；"
                             "未完成的句子可再次处理，请校对生成的内容。")
         elif code == 2:
-            self._status = f"本地{action}已停止，已保存 {self._enrich_done} 句，跳过 {self._enrich_failed} 句。"
+            self._status = f"{self._enrich_source}{action}已停止，已保存 {self._enrich_done} 句，跳过 {self._enrich_failed} 句。"
         else:
-            self._status = f"本地{action}中断：{detail}；已保存 {self._enrich_done} 句。"
+            self._status = f"{self._enrich_source}{action}中断：{detail}；已保存 {self._enrich_done} 句。"
         self.stateChanged.emit()
 
     @Slot()
@@ -781,3 +842,60 @@ class StudyBridge(QObject):
         if self._enrich_thread and self._enrich_thread.isRunning():
             self._enrich_thread.stop()
             self._enrich_thread.wait()
+        if self._split_thread and self._split_thread.isRunning():
+            self._split_thread.cancelled.set()
+            self._split_thread.wait()
+
+    @Slot()
+    def organizeSubtitles(self) -> None:
+        if self._busy or self._enriching or not self._project_file or (self._split_thread and self._split_thread.isRunning()):
+            return
+        if self._project.get("language") != "en":
+            self._status = "当前整理入口用于带逐词时间戳的英语字幕。"
+            self.stateChanged.emit()
+            return
+        self._splitting = self._busy = True
+        self._split_source = copy.deepcopy(self._project.get("segments", []))
+        self._split_thread = SegmentationThread(self._split_source, "en")
+        self._split_thread.progress.connect(self._split_progress)
+        self._split_thread.ready.connect(self._split_ready)
+        self._split_thread.failed.connect(self._split_failed)
+        self._status = "正在整理字幕；本地后端可辅助分段和翻译，云端后端可在整理后点击中文翻译。"
+        self.stateChanged.emit()
+        self._split_thread.start()
+
+    def _split_progress(self, done, total):
+        self._status = f"正在本地整理字幕：已生成 {done} 个短片段。"
+        self.stateChanged.emit()
+
+    def _split_failed(self, message):
+        self._busy = self._splitting = False
+        self._status = f"字幕整理未完成，原字幕已保留：{message}"
+        self.stateChanged.emit()
+
+    def _split_ready(self, segments, audit):
+        original_project = copy.deepcopy(self._project)
+        try:
+            if self._project.get("segments", []) != self._split_source:
+                raise ValueError("字幕在处理期间已改变，请重新整理")
+            if audit.get("changed"):
+                validated = validate_segments(segments, float(self._project["duration"]), "en")
+                backup = DATA / "subtitle-backups" / f"{self._project_file.stem}-{datetime.now():%Y%m%d-%H%M%S}.json"
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                backup.write_text(json.dumps(self._project, ensure_ascii=False, indent=2), encoding="utf-8")
+                self._project["segments"] = validated
+                self._project["listening_segmentation"] = {"version": 1, "audit": audit, "backup": str(backup)}
+                self._active_index = 0
+                self._active_word = -1
+                self.updatePlayback(self._playback_position_ms)
+                self._save()
+                self.segmentsChanged.emit()
+            self._status = f"字幕整理完成：{audit.get('original_count', len(segments))} → {len(segments)} 个片段；原字幕已备份，译文请校对。"
+            if audit.get("fallback_groups") or audit.get("translation_failures"):
+                self._status += " 部分模型请求未完成，已用规则分段；缺失译文可稍后翻译。"
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self._project = original_project
+            self._status = f"字幕整理失败，原字幕已保留：{exc}"
+        finally:
+            self._busy = self._splitting = False
+            self.stateChanged.emit()

@@ -7,11 +7,13 @@ import QtQuick.Effects
 
 ApplicationWindow {
     id: root
+    property string appVersion: "0.1.0"
     width: 1180
     height: 820
     minimumWidth: 900
     minimumHeight: 640
     visible: true
+    opacity: uiAnimationsEnabled ? 0 : 1
     flags: Qt.Window | Qt.FramelessWindowHint
     title: study.hasMedia ? "句间 — " + study.title : "句间"
     color: "transparent"
@@ -20,6 +22,16 @@ ApplicationWindow {
         antialiasing: true
     }
     contentItem.layer.enabled: !root.maximized
+    contentItem.transformOrigin: Item.Center
+    contentItem.scale: uiAnimationsEnabled ? 0.965 : 1
+    Component.onCompleted: if (uiAnimationsEnabled) startupAnimation.start()
+    ParallelAnimation {
+        id: startupAnimation
+        NumberAnimation { target: root; property: "opacity"; from: 0; to: 1
+            duration: 190; easing.type: Easing.OutCubic }
+        NumberAnimation { target: root.contentItem; property: "scale"; from: 0.965; to: 1
+            duration: 210; easing.type: Easing.OutCubic }
+    }
     contentItem.layer.effect: MultiEffect {
         maskEnabled: true
         maskSource: cornerMask
@@ -46,7 +58,18 @@ ApplicationWindow {
 
     property real videoHeight: settings.values.listening_video_height || 360
     property int highlightDelayMs: settings.values.highlight_delay_ms === undefined ? 200 : settings.values.highlight_delay_ms
-    property real highlightSeconds: Math.max(0, player.position - highlightDelayMs) / 1000
+    // An explicit sentence jump must not highlight the preceding sentence while
+    // the calibrated playback delay catches up to the new start position.
+    property real highlightSeekFloor: -1
+    property real highlightSeconds: {
+        var seconds = Math.max(0, player.position - highlightDelayMs,
+                               highlightSeekFloor * 1000) / 1000
+        if (study.loopSentence && study.sentenceCount > 0) {
+            var current = study.currentSentence
+            seconds = Math.min(seconds, Math.max(current.start, current.end - 0.001))
+        }
+        return seconds
+    }
     property int highlightedSentenceIndex: {
         var segments = study.segments
         var selected = 0
@@ -62,6 +85,7 @@ ApplicationWindow {
         && !(activeFocusItem instanceof TextInput) && !(activeFocusItem instanceof TextEdit)
     property bool textHidden: false
     property bool scrubbing: false
+    onScrubbingChanged: if (scrubbing) highlightSeekFloor = -1
     property string page: "home"
     property bool sidebarCollapsed: false
     property int pendingResumeMs: 0
@@ -215,12 +239,16 @@ ApplicationWindow {
                 study.savePlayback(position)
         }
         onPositionChanged: {
+            if (root.highlightSeekFloor >= 0
+                    && position - root.highlightDelayMs >= root.highlightSeekFloor * 1000)
+                root.highlightSeekFloor = -1
             if (!root.scrubbing && study.loopSentence && study.sentenceCount > 0
                     && playbackState === MediaPlayer.PlayingState) {
                 var current = study.currentSentence
                 var end = Math.round(current.end * 1000)
                 if (position >= end && position < end + 400) {
-                    position = Math.round(current.start * 1000)
+                    root.highlightSeekFloor = current.start
+                    player.position = Math.round(current.start * 1000)
                     return
                 }
             }
@@ -230,11 +258,13 @@ ApplicationWindow {
     Connections {
         target: study
         function onMediaChanged() {
+            root.highlightSeekFloor = -1
             root.pendingResumeMs = study.resumeMs
             if (study.hasMedia) root.page = "listen"
             else { player.stop(); root.page = "library" }
         }
         function onSeekRequested(ms) {
+            root.highlightSeekFloor = study.currentSentence.start
             player.position = ms
             player.play()
         }
@@ -479,7 +509,8 @@ ApplicationWindow {
             themeAccent: root.accentColor
             onOpenNotes: { writer.refresh(); root.page = "notes" } }
         NotesView { anchors.fill: parent; visible: root.page === "notes" }
-        SettingsView { anchors.fill: parent; visible: root.page === "settings" }
+        SettingsView { anchors.fill: parent; visible: root.page === "settings"
+            appVersion: root.appVersion }
 
         Item {
             id: leftPane
@@ -496,8 +527,12 @@ ApplicationWindow {
                 height: !study.hasMedia ? leftPane.height : study.hasVideo
                     ? Math.max(96, Math.min(root.videoHeight, leftPane.height - 240)) : 96
                 radius: 10
-                color: study.hasVideo ? "#1D2320" : study.hasMedia ? "#E7DFDE" : "#E9ECE9"
-                border.color: study.hasMedia && !study.hasVideo ? "#D8CFCE" : "transparent"
+                color: study.hasVideo ? "#1D2320" : study.hasMedia
+                    ? Qt.tint(root.surfaceColor, Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.08))
+                    : root.pageColor
+                border.color: study.hasMedia && !study.hasVideo
+                    ? Qt.tint(root.surfaceColor, Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.18))
+                    : "transparent"
                 clip: true
                 layer.enabled: study.hasVideo
                 layer.effect: MultiEffect {

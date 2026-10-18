@@ -10,6 +10,22 @@ from time import perf_counter
 STARTED = perf_counter()
 
 
+def windows_animations_enabled() -> bool:
+    """Respect the Windows client-area animation accessibility setting."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+
+        enabled = ctypes.c_int(1)
+        result = ctypes.windll.user32.SystemParametersInfoW(
+            0x1042, 0, ctypes.byref(enabled), 0
+        )
+        return bool(enabled.value) if result else True
+    except (AttributeError, OSError):
+        return True
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--release-check":
         from release_check import main as check_main
@@ -48,6 +64,7 @@ def main() -> int:
     engine.rootContext().setContextProperty("downloads", downloads)
     engine.rootContext().setContextProperty("settings", settings)
     engine.rootContext().setContextProperty("writer", writer)
+    engine.rootContext().setContextProperty("uiAnimationsEnabled", windows_animations_enabled())
     engine.load(QUrl.fromLocalFile(str(ASSETS / "qml" / "Main.qml")))
     if not engine.rootObjects():
         return 1

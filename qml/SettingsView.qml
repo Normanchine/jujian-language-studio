@@ -5,6 +5,7 @@ import QtQuick.Layouts
 
 Item {
     id: settingsPage
+    property string appVersion: ""
     component ShortcutField: TextField {
         id: keyField
         property string sequence: ""
@@ -34,6 +35,13 @@ Item {
         Rectangle { id: panel; x: 4; y: 4; width: parent.width - 8; height: settingsColumn.height + 38
             color: "#FFFFFF"; radius: 10; border.color: "#DFE4E0"
             Column { id: settingsColumn; x: 22; y: 19; width: parent.width - 44; spacing: 13
+                RowLayout { width: parent.width
+                    Text { text: "设置"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D"
+                        Layout.fillWidth: true }
+                    Text { objectName: "settingsVersionLabel"; text: "句间 v" + settingsPage.appVersion
+                        font.pixelSize: 12; color: "#819087" }
+                }
+                Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
                 Text { text: "外观"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D" }
                 Flow {
                     width: parent.width; spacing: 10

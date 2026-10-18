@@ -5,436 +5,628 @@ import QtQuick.Layouts
 Item {
     id: view
     objectName: "writingView"
+    property color themeAccent: settings.palette.accent
+    property color ink: "#26342C"
+    property color muted: "#78877D"
+    property color paper: settings.palette.surface
+    property bool libraryMode: true
+    property bool librarySideOpen: false
     property bool reviewMode: false
-    property bool notebookOpen: false
-    property bool libraryMode: false
+    property bool reviewDrawerOpen: false
+    property bool sideOpen: false
+    property int sideWidth: writer.sideWidth
+    property string sideMode: "both"
+    property string loadedPath: ""
+    property string draftQuery: ""
+    property string draftFilter: "all"
     property bool favoritesOnly: false
     property string pendingDelete: ""
     property string pendingDeleteTitle: ""
-    property string noteSourceQuote: ""
-    property string loadedPath: ""
-    property var selectedTargets: []
-    property string materialFilter: "全部"
-    property color ink: "#26342C"
-    property color paper: "#FFFEFB"
-    property color themeAccent: "#C94859"
-    property bool showSide: false
-    property int reviewElapsed: 0
+    property int activeIssue: -1
+    property var previewMaterial: ({})
+    property string reviewTab: "issues"
+    property int elapsedSeconds: 0
+    property int reviewElapsedSeconds: 0
+    property bool reviewWaiting: false
+    property bool topicExpanded: false
+    property bool topicEditing: false
     signal openNotes()
-    Timer { interval: 1000; repeat: true; running: writer.busy
-        onRunningChanged: if (running) view.reviewElapsed = 0
-        onTriggered: view.reviewElapsed++ }
 
     function saveNow() {
-        if (writer.currentPath && !reviewMode)
+        if (writer.currentPath && !reviewMode && !libraryMode)
             writer.saveDraft(titleField.text, topicField.text, draftText.text)
     }
-    function showLibrary() { saveNow(); libraryMode = true }
+    function showLibrary() { saveNow(); reviewMode = false; libraryMode = true; librarySideOpen = false }
+    function showMaterials() {
+        if (libraryMode || !writer.currentPath) librarySideOpen = true
+        else { sideMode = "library"; setSide(true) }
+    }
+    function startDraft(language, mode) {
+        saveNow(); writer.newDraft(language)
+        if (mode !== "practice") writer.setMode(mode)
+        libraryMode = false; librarySideOpen = false; reviewMode = false
+        elapsedSeconds = 0
+    }
+    function openDraft(path) {
+        saveNow(); writer.openDraft(path)
+        libraryMode = false; librarySideOpen = false; reviewMode = false
+        elapsedSeconds = 0
+    }
+    function setSide(opened) { sideOpen = opened; writer.setSideOpen(opened) }
+    function clampSideWidth(requested, areaWidth) {
+        return Math.max(270, Math.min(650, Math.min(requested, areaWidth - 480)))
+    }
+    function toggleTarget(expression) {
+        var values = (writer.current.targets || []).slice()
+        var at = values.indexOf(expression)
+        if (at >= 0) values.splice(at, 1)
+        else values.push(expression)
+        writer.setTargets(JSON.stringify(values))
+    }
     function visibleDrafts() {
         var result = []
+        var query = draftQuery.trim().toLowerCase()
         for (var i = 0; i < writer.drafts.length; i++) {
             var item = writer.drafts[i]
-            if (!favoritesOnly || item.favorite) result.push(item)
+            if (favoritesOnly && !item.favorite) continue
+            if (draftFilter === "reviewed" && !item.reviewed) continue
+            if (draftFilter === "draft" && item.reviewed) continue
+            if (query && (item.title + " " + (item.preview || "")).toLowerCase().indexOf(query) < 0) continue
+            result.push(item)
         }
         return result
     }
-    Popup {
-        id: deleteConfirm
-        objectName: "essayDeleteConfirm"
-        modal: true
-        focus: true
-        anchors.centerIn: Overlay.overlay
-        width: 398; height: 200; padding: 24
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        Overlay.modal: Rectangle { color: "#660F1C16" }
-        background: Rectangle {
-            radius: 14; color: "#FFFFFF"; border.color: "#E2E7E2"
-        }
-        contentItem: Column {
-            spacing: 14
-            Row { spacing: 11
-                Rectangle { width: 34; height: 34; radius: 10; color: "#FCE9ED"
-                    Text { anchors.centerIn: parent; text: "删"; color: "#B33E51"
-                        font.family: "Microsoft YaHei UI"; font.pixelSize: 14; font.bold: true } }
-                Text { text: "删除作文"; color: view.ink; font.pixelSize: 18
-                    font.weight: Font.DemiBold; anchors.verticalCenter: parent.verticalCenter }
-            }
-            Text { width: parent.width; text: "即将删除「" + view.pendingDeleteTitle + "」"
-                color: "#35443A"; font.pixelSize: 13; elide: Text.ElideRight }
-            Text { width: parent.width; text: "删除后无法在应用中恢复。"
-                color: "#77857A"; font.pixelSize: 12 }
-            Row { spacing: 9; anchors.right: parent.right
-                AppButton { text: "取消"; width: 82; onClicked: deleteConfirm.close() }
-                AppButton { text: "删除作文"; width: 104; primary: true; destructive: true
-                    onClicked: {
-                        writer.deleteDraft(view.pendingDelete)
-                        deleteConfirm.close()
-                    } }
-            }
+    function selectIssue(index) {
+        activeIssue = index; reviewTab = "issues"; reviewDrawerOpen = true
+        if (issueRepeater.itemAt(index))
+            issueFlick.contentY = Math.max(0, Math.min(issueFlick.contentHeight - issueFlick.height,
+                                                       issueRepeater.itemAt(index).y - 8))
+        if (writer.reviewIssues[index] && writer.reviewIssues[index].paragraphIndex !== undefined) {
+            var paragraph = paragraphRepeater.itemAt(writer.reviewIssues[index].paragraphIndex)
+            if (paragraph)
+                essayFlick.contentY = Math.max(0, Math.min(essayFlick.contentHeight - essayFlick.height, paragraph.y - 16))
         }
     }
-    function filteredMaterials() {
-        var result = []
-        var language = writer.current.language || "ja"
-        for (var i = 0; i < writer.favorites.length; i++) {
-            var favorite = writer.favorites[i]
-            if (favorite.language === language && (materialFilter === "全部" || materialFilter === "收藏"
-                    || favorite.kind === materialFilter)) result.push(favorite)
-        }
-        if (materialFilter === "收藏") return result
-        for (var j = 0; j < writer.materials.length; j++) {
-            var item = writer.materials[j]
-            if (materialFilter !== "全部" && item.kind !== materialFilter) continue
-            if (!result.some(function(value) { return value.expression === item.expression })) result.push(item)
-        }
-        return result
+    function reviewHtmlFor(paragraph) {
+        var content = paragraph.html || ""
+        if (activeIssue < 0) return content
+        var marker = 'href="issue:' + activeIssue + '"'
+        var at = content.indexOf(marker)
+        if (at < 0) return content
+        var open = content.lastIndexOf("<a ", at)
+        var close = content.indexOf("</a>", at)
+        if (open < 0 || close < 0) return content
+        return content.slice(0, open) + '<span style="background-color:#DDEBDD;">'
+               + content.slice(open, close + 4) + '</span>' + content.slice(close + 4)
     }
-    Connections {
-        target: writer
+    Connections { target: writer
         function onChanged() {
+            if (view.reviewWaiting && !writer.busy) view.reviewWaiting = false
             if (writer.currentPath && view.loadedPath !== writer.currentPath) {
                 view.loadedPath = writer.currentPath
-                titleField.text = writer.current.title || ""
+                titleField.text = writer.current.title === "未命名作文" ? "" : writer.current.title || ""
                 topicField.text = writer.current.topic || ""
                 draftText.text = writer.current.text || ""
-                view.selectedTargets = writer.current.targets || []
+                Qt.callLater(function() { writer.setDraftLineSpacing(draftText) })
+                view.topicExpanded = false
+                view.topicEditing = false
+                view.sideOpen = !!writer.current.side_open
                 view.reviewMode = false
+                view.activeIssue = -1
             }
         }
-        function onReviewReady() { view.reviewMode = true }
-        function onTopicReady() { topicField.text = writer.current.topic || "" }
+        function onTopicReady() { topicField.text = writer.current.topic || ""; view.topicEditing = false }
+        function onReviewReady() { view.reviewWaiting = false; view.reviewMode = true; view.reviewDrawerOpen = false
+            view.activeIssue = -1; view.reviewTab = "issues" }
     }
-    Timer { id: autosave; interval: 900; repeat: false; onTriggered: view.saveNow() }
+    Timer { id: autosave; interval: 900; onTriggered: view.saveNow() }
+    Timer { interval: 1000; repeat: true
+        running: view.visible && !view.libraryMode && !view.reviewMode
+                 && writer.current.practice_style === "timed" && writer.current.writing_mode !== "practice"
+        onTriggered: view.elapsedSeconds++ }
+    Timer { interval: 1000; repeat: true; running: writer.busy && view.reviewWaiting
+        onTriggered: view.reviewElapsedSeconds++ }
 
-    Column {
-        anchors.fill: parent; spacing: 14
-        RowLayout {
-            width: parent.width; height: 58
-            ColumnLayout { Layout.fillWidth: true; spacing: 2
-                Text { text: reviewMode ? "作文批改" : "写作";
-                    color: view.ink; font.pixelSize: 21; font.weight: Font.DemiBold }
-            }
-            Row { spacing: 8; Layout.preferredWidth: childrenRect.width
-                Layout.preferredHeight: childrenRect.height; Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
-                AppButton { visible: !!writer.currentPath && !!writer.current.review
-                    text: reviewMode ? "返回草稿" : "查看批改"
-                    onClicked: { if (!reviewMode) view.saveNow(); reviewMode = !reviewMode } }
-                AppButton { visible: view.width < 950 && !!writer.currentPath && !view.libraryMode
-                    text: view.showSide ? "收起侧栏" : (view.reviewMode ? "写作建议" : "写作素材")
-                    onClicked: view.showSide = !view.showSide }
-                AppButton { visible: !!writer.currentPath && !view.libraryMode; text: "全部作文"
-                    onClicked: view.showLibrary() }
-                AppButton { text: "新建日语"; onClicked: { view.saveNow(); writer.newDraft("ja"); view.libraryMode = false } }
-                AppButton { text: "新建英语"; onClicked: { view.saveNow(); writer.newDraft("en"); view.libraryMode = false } }
+    Popup { id: deleteConfirm; objectName: "essayDeleteConfirm"
+        modal: true; focus: true; anchors.centerIn: Overlay.overlay
+        width: Math.min(400, view.width - 40); height: 194; padding: 22
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#650F1C16" }
+        background: Rectangle { radius: 14; color: view.paper; border.color: "#E1E7E1" }
+        ColumnLayout { anchors.fill: parent; spacing: 12
+            Text { text: "删除作文"; color: view.ink; font.pixelSize: 18; font.weight: Font.DemiBold }
+            Text { Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: "即将删除「" + view.pendingDeleteTitle + "」。删除后无法在应用中恢复。"
+                color: view.muted; font.pixelSize: 12 }
+            Item { Layout.fillHeight: true }
+            RowLayout { Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                AppButton { text: "取消"; onClicked: deleteConfirm.close() }
+                AppButton { text: "删除作文"; primary: true; destructive: true
+                    onClicked: { writer.deleteDraft(view.pendingDelete); deleteConfirm.close() } }
             }
         }
-        Rectangle {
-            visible: view.libraryMode || !writer.currentPath; width: parent.width; height: parent.height - 72
-            radius: 10; color: "#FFFFFF"; border.color: "#DFE4E0"
-            Column {
-                anchors.fill: parent; anchors.margins: 20; spacing: 12
-                RowLayout { width: parent.width
-                    Text { text: "全部作文"; color: view.ink; font.pixelSize: 17; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                    AppButton { text: view.favoritesOnly ? "★ 只看收藏" : "☆ 只看收藏"
-                        onClicked: view.favoritesOnly = !view.favoritesOnly }
-                }
-                ListView { id: essayList; width: parent.width; height: parent.height - 40
-                    clip: true; spacing: 8
-                    model: view.visibleDrafts()
-                    delegate: Rectangle {
-                        required property var modelData
-                        width: essayList.width - 12; height: 75; radius: 9
-                        color: draftHover.containsMouse ? "#F6F8F6" : "#FAFBFA"
-                        border.color: "#E6EBE7"
-                        Text { x: 14; y: 10; width: parent.width - 130; elide: Text.ElideRight
-                            text: modelData.title; color: view.ink; font.pixelSize: 14; font.bold: true }
-                        Text { x: 14; y: 36; width: parent.width - 130; elide: Text.ElideRight
-                            text: (modelData.language === "en" ? "英语" : "日语") + " · " + modelData.updatedLabel + " · " + (modelData.preview || "空白草稿")
-                            color: "#78857C"; font.pixelSize: 11 }
-                        MouseArea { id: draftHover; anchors.fill: parent; hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: { writer.openDraft(modelData.path); view.libraryMode = false } }
-                        AppButton { anchors.right: deleteButton.left; anchors.rightMargin: 6; y: 18; z: 2
-                            text: modelData.favorite ? "★" : "☆"; flat: true
-                            onClicked: writer.toggleDraftFavorite(modelData.path) }
-                        AppButton { id: deleteButton; anchors.right: parent.right; anchors.rightMargin: 10; y: 18; z: 2
-                            text: "删除"; flat: true
-                            onClicked: {
-                                view.pendingDelete = modelData.path
-                                view.pendingDeleteTitle = modelData.title
-                                deleteConfirm.open()
-                            } }
+    }
+    Popup { id: notePopup; modal: true; focus: true; anchors.centerIn: Overlay.overlay
+        width: Math.min(480, view.width - 40); height: 300; padding: 20
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#650F1C16" }
+        background: Rectangle { radius: 14; color: view.paper; border.color: "#E1E7E1" }
+        ColumnLayout { anchors.fill: parent; spacing: 11
+            Text { text: "写下这次的发现"; color: view.ink; font.pixelSize: 18; font.weight: Font.DemiBold }
+            TextArea { id: noteText; Layout.fillWidth: true; Layout.fillHeight: true
+                wrapMode: TextEdit.Wrap; placeholderText: "我发现……"; font.pixelSize: 13
+                background: Rectangle { radius: 9; color: "#FAFBFA"; border.color: "#DCE4DE" } }
+            RowLayout { Layout.fillWidth: true
+                AppButton { text: "全部笔记"; onClicked: { notePopup.close(); view.openNotes() } }
+                Item { Layout.fillWidth: true }
+                AppButton { text: "取消"; onClicked: notePopup.close() }
+                AppButton { text: "保存笔记"; primary: true; enabled: noteText.text.trim().length > 0
+                    onClicked: { writer.addNote(noteText.text, ""); noteText.clear(); notePopup.close() } }
+            }
+        }
+    }
+    Popup { id: materialPreviewPopup; modal: true; focus: true; anchors.centerIn: Overlay.overlay
+        width: Math.min(490, view.width - 36); height: 326; padding: 20
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#650F1C16" }
+        background: Rectangle { radius: 14; color: view.paper; border.color: "#E1E7E1" }
+        ColumnLayout { anchors.fill: parent; spacing: 9
+            Text { text: view.previewMaterial.expression || "素材"; Layout.fillWidth: true; wrapMode: Text.Wrap
+                color: view.ink; font.pixelSize: 18; font.weight: Font.DemiBold }
+            Text { text: view.previewMaterial.meaning || "尚未补充释义"; Layout.fillWidth: true; wrapMode: Text.Wrap
+                color: "#536359"; font.pixelSize: 13 }
+            Text { text: view.previewMaterial.usage || ""; visible: !!view.previewMaterial.usage
+                Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#66756A"; font.pixelSize: 12 }
+            Text { text: view.previewMaterial.example || ""; visible: !!view.previewMaterial.example
+                Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#66756A"; font.pixelSize: 12 }
+            Text { text: view.previewMaterial.context ? "学习原句：" + view.previewMaterial.context : ""
+                visible: !!view.previewMaterial.context; Layout.fillWidth: true; wrapMode: Text.Wrap
+                color: view.muted; font.pixelSize: 11 }
+            Item { Layout.fillHeight: true }
+            RowLayout { Layout.fillWidth: true
+                AppButton { text: "到素材库编辑"; visible: !!view.previewMaterial.id
+                    onClicked: { materialPreviewPopup.close(); view.showMaterials() } }
+                Item { Layout.fillWidth: true }
+                AppButton { text: "关闭"; onClicked: materialPreviewPopup.close() }
+            }
+        }
+    }
+
+    ColumnLayout { anchors.fill: parent
+        anchors.rightMargin: view.librarySideOpen && view.width >= 900 ? librarySidePanel.width + 14 : 0
+        spacing: 14; visible: view.libraryMode || !writer.currentPath
+        RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 48
+            ColumnLayout { Layout.fillWidth: true; spacing: 3
+                Text { text: "写作"; color: view.ink; font.pixelSize: 22; font.weight: Font.DemiBold }
+            }
+            AppButton { text: view.librarySideOpen ? "收起素材" : "我的素材"
+                onClicked: view.librarySideOpen = !view.librarySideOpen }
+        }
+        ScrollView { id: writingScroll; Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            Column { width: Math.max(0, writingScroll.width - 14); spacing: 16
+                Rectangle { width: parent.width; height: 120; radius: 14
+                    color: view.paper; border.color: "#E3E8E2"
+                    Column { x: 20; y: 18; width: parent.width - 40; spacing: 11
+                        Text { text: "开始新的练习"; color: view.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
+                        Row { spacing: 9
+                            AppButton { text: "日语表达练习"; onClicked: view.startDraft("ja", "practice") }
+                            AppButton { text: "英语自由写作"; onClicked: view.startDraft("en", "practice") }
+                            AppButton { text: "托福邮件"; onClicked: view.startDraft("en", "toefl_email") }
+                            AppButton { text: "托福学术讨论"; onClicked: view.startDraft("en", "toefl_discussion") }
+                        }
                     }
                 }
-                Text { visible: essayList.count === 0; text: "这里还没有作文。"
-                    color: "#839087"; font.pixelSize: 13 }
+                Rectangle { width: parent.width; height: draftList.count === 0 ? 170 : Math.max(230, 80 + draftList.count * 91)
+                    radius: 14; color: view.paper; border.color: "#E3E8E2"
+                    ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 11
+                        RowLayout { Layout.fillWidth: true
+                            Text { text: "我的作文"; Layout.fillWidth: true; color: view.ink
+                                font.pixelSize: 17; font.weight: Font.DemiBold }
+                            AppButton { text: view.favoritesOnly ? "★ 收藏" : "☆ 收藏"; flat: true
+                                onClicked: view.favoritesOnly = !view.favoritesOnly }
+                        }
+                        RowLayout { Layout.fillWidth: true; spacing: 8
+                            TextField { id: searchDraft; Layout.fillWidth: true; Layout.preferredHeight: 35
+                                placeholderText: "搜索标题或正文"; font.pixelSize: 12; leftPadding: 12
+                                onTextChanged: view.draftQuery = text
+                                background: Rectangle { radius: 8; color: "#FAFBFA"
+                                    border.color: searchDraft.activeFocus ? view.themeAccent : "#DCE4DE" } }
+                            AppCombo { Layout.preferredWidth: 104; model: ["全部", "待批改", "已批改"]
+                                onActivated: view.draftFilter = ["all", "draft", "reviewed"][currentIndex] }
+                        }
+                        ListView { id: draftList; Layout.fillWidth: true; Layout.fillHeight: draftList.count > 0
+                            visible: draftList.count > 0
+                            clip: true; spacing: 7; model: view.visibleDrafts()
+                            delegate: Rectangle {
+                                required property var modelData
+                                width: draftList.width - 8; height: 79; radius: 9
+                                color: draftHover.containsMouse ? settings.palette.selection : "#FAFBFA"
+                                border.color: "#E6EBE6"
+                                Text { x: 14; y: 9; width: parent.width - 135; elide: Text.ElideRight
+                                    text: modelData.title; color: view.ink; font.pixelSize: 14; font.weight: Font.DemiBold }
+                                Text { x: 14; y: 31; width: parent.width - 135; elide: Text.ElideRight
+                                    text: modelData.preview || "空白草稿，点击继续写作"; color: "#6E7D72"; font.pixelSize: 11 }
+                                Text { x: 14; y: 56; width: parent.width - 135; elide: Text.ElideRight
+                                    text: (modelData.language === "ja" ? "日语" : "英语") + " · " + modelData.updatedLabel
+                                        + (modelData.reviewed ? " · 已有批改" : " · 待批改")
+                                    color: "#89958B"; font.pixelSize: 10 }
+                                MouseArea { id: draftHover; anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor; onClicked: view.openDraft(modelData.path) }
+                                AppButton { anchors.right: removeDraft.left; anchors.rightMargin: 3; y: 21; z: 2
+                                    text: modelData.favorite ? "★" : "☆"; flat: true
+                                    onClicked: writer.toggleDraftFavorite(modelData.path) }
+                                AppButton { id: removeDraft; anchors.right: parent.right; anchors.rightMargin: 8; y: 21; z: 2
+                                    text: "删除"; flat: true; onClicked: {
+                                        view.pendingDelete = modelData.path
+                                        view.pendingDeleteTitle = modelData.title
+                                        deleteConfirm.open()
+                                    } }
+                            }
+                        }
+                        Text { visible: draftList.count === 0; Layout.fillWidth: true
+                            text: writer.drafts.length === 0 ? "暂无作文" : "没有符合条件的作文"
+                            color: view.muted; font.pixelSize: 12 }
+                    }
+                }
             }
         }
-        Item {
-            visible: !!writer.currentPath && !view.libraryMode; width: parent.width; height: parent.height - 72
-            RowLayout {
-                anchors.fill: parent; spacing: 14
-                Rectangle {
-                    Layout.fillWidth: true; Layout.fillHeight: true; radius: 16
-                    color: view.paper; border.color: "#E8E5DC"
-                    Column {
-                        anchors.fill: parent; anchors.margins: 24; spacing: 13
-                        RowLayout {
-                            width: parent.width; height: 44; visible: !view.reviewMode
-                            TextField { id: titleField; Layout.fillWidth: true; placeholderText: "作文标题"
-                                font.pixelSize: 23; font.bold: true; color: view.ink
-                                background: Rectangle { color: "transparent" }
-                                onTextChanged: autosave.restart() }
-                            Rectangle { width: 54; height: 26; radius: 13; color: "#F0F3EE"
-                                Text { anchors.centerIn: parent; text: writer.current.language === "en" ? "英语" : "日语"
-                                    color: "#66796B"; font.pixelSize: 11; font.weight: Font.DemiBold } }
-                        }
-                         RowLayout { width: parent.width; height: 38; visible: !view.reviewMode; spacing: 8
-                             AppCombo { id: writingMode; Layout.preferredWidth: 137; height: 33
-                                 visible: writer.current.language === "en"
-                                 model: ["自由写作", "托福邮件练习", "托福学术讨论"]
-                                 currentIndex: ({practice:0, toefl_email:1, toefl_discussion:2})[writer.current.writing_mode || "practice"] || 0
-                                 onActivated: writer.setMode(["practice", "toefl_email", "toefl_discussion"][currentIndex]) }
-                             TextField { id: topicField; Layout.fillWidth: true; height: 36
-                                 placeholderText: "写作题目（可留空）"
-                                 font.pixelSize: 12; leftPadding: 12; color: view.ink
-                                 background: Rectangle { radius: 9; color: "#F8F8F4"; border.color: "#E7EAE3" }
-                                 onTextChanged: autosave.restart() }
-                             AppButton { text: "AI 出题"; enabled: !writer.busy
-                                 onClicked: { view.saveNow(); writer.generateTopic() } }
+    }
+
+    Rectangle { id: librarySidePanel; z: 5
+        visible: view.librarySideOpen && (view.libraryMode || !writer.currentPath)
+        x: view.width - width
+        width: Math.min(view.sideWidth, view.width >= 900 ? view.width - 500 : view.width - 28)
+        height: view.height
+        radius: 14; color: "#F9FBF8"; border.color: "#E2E9E1"
+        Rectangle { x: 0; width: 3; height: parent.height; radius: 2
+            color: listResize.containsMouse || listResize.pressed ? view.themeAccent : "transparent" }
+        MouseArea { id: listResize; x: 0; width: 14; height: parent.height; z: 6
+            hoverEnabled: true; cursorShape: Qt.SizeHorCursor; preventStealing: true
+            onPositionChanged: function(mouse) {
+                if (pressed && view.width >= 900) {
+                    var point = mapToItem(view, mouse.x, mouse.y)
+                    view.sideWidth = Math.max(270, Math.min(650, Math.min(view.width - point.x, view.width - 500)))
+                }
+            }
+            onReleased: writer.setSideWidth(view.sideWidth)
+        }
+        ColumnLayout { anchors.fill: parent; anchors.margins: 14; spacing: 10
+            RowLayout { Layout.fillWidth: true
+                Text { text: "素材库"; Layout.fillWidth: true; color: view.ink
+                    font.pixelSize: 16; font.weight: Font.DemiBold }
+                AppButton { text: "收起"; flat: true; onClicked: view.librarySideOpen = false }
+            }
+            WritingMaterials { objectName: "listWritingMaterials"; Layout.fillWidth: true; Layout.fillHeight: true; compact: true
+                sourceFilter: "favorites"
+                dialogWidth: view.width; dialogHeight: view.height; themeAccent: view.themeAccent }
+        }
+    }
+
+    ColumnLayout { anchors.fill: parent; spacing: 12
+        visible: !view.libraryMode && !!writer.currentPath
+        RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 50; spacing: 8
+            AppButton { text: "← 返回作文"; onClicked: view.showLibrary() }
+            Text { Layout.fillWidth: true; text: view.reviewMode ? "对照批改" : "写作"
+                color: view.ink; font.pixelSize: 20; font.weight: Font.DemiBold }
+            AppButton { visible: view.reviewMode; text: "继续修改"; primary: true
+                onClicked: { view.reviewMode = false; view.reviewDrawerOpen = false; draftText.forceActiveFocus() } }
+            AppButton { visible: view.reviewMode && !body.inlineSide
+                text: view.reviewDrawerOpen ? "收起建议" : "查看建议"
+                onClicked: view.reviewDrawerOpen = !view.reviewDrawerOpen }
+            AppButton { visible: !view.reviewMode && !!writer.current.review; text: "查看上次批改"
+                onClicked: { view.saveNow(); view.reviewMode = true } }
+            AppButton { visible: !view.reviewMode; text: view.sideOpen ? "收起素材" : "打开素材"
+                onClicked: { if (!view.sideOpen) view.sideMode = "both"; view.setSide(!view.sideOpen) } }
+        }
+        Item { id: body; Layout.fillWidth: true; Layout.fillHeight: true
+            property bool inlineSide: width >= 850
+            Rectangle { id: sheet; objectName: "writingSheet"
+                x: (view.reviewMode || view.sideOpen) && body.inlineSide
+                   ? (body.width - sidePanel.width - width) / 2 : (body.width - width) / 2
+                 width: (view.reviewMode || view.sideOpen) && body.inlineSide
+                        ? Math.min(730, body.width - sidePanel.width - 14) : Math.min(body.width, 730)
+                height: body.height; radius: 15; color: view.paper; border.color: "#E5E9E2"
+                ColumnLayout { anchors.fill: parent; anchors.margins: sheet.width < 600 ? 17 : 26; spacing: 12
+                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 43; visible: !view.reviewMode
+                        TextField { id: titleField; objectName: "writingTitleField"; Layout.fillWidth: true; Layout.preferredHeight: 42
+                            placeholderText: "给这篇作文起个标题"; font.pixelSize: 22; font.weight: Font.DemiBold
+                            color: view.ink; background: Item {}
+                            onTextChanged: autosave.restart() }
+                        Text { text: writer.current.language === "ja" ? "日语" : "英语";
+                            color: view.muted; font.pixelSize: 11 }
+                    }
+                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 38; visible: !view.reviewMode
+                        Text { text: writer.current.writing_mode === "toefl_email" ? "托福 · 邮件"
+                                   : writer.current.writing_mode === "toefl_discussion" ? "托福 · 学术讨论"
+                                   : writer.current.language === "ja" ? "日语表达" : "英语自由写作"
+                            color: view.themeAccent; font.pixelSize: 12; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                        AppCombo { visible: writer.current.writing_mode !== "practice"; Layout.preferredWidth: 112
+                            model: ["引导练习", "限时模拟"]
+                            currentIndex: writer.current.practice_style === "timed" ? 1 : 0
+                            onActivated: { writer.setPracticeStyle(currentIndex === 1 ? "timed" : "guided"); view.elapsedSeconds = 0 } }
+                        Text { visible: writer.current.practice_style === "timed" && writer.current.writing_mode !== "practice"
+                            text: {
+                                var limit = writer.current.writing_mode === "toefl_email" ? 420 : 600
+                                var left = Math.max(0, limit - view.elapsedSeconds)
+                                return left > 0 ? Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0") : "时间到"
+                            }
+                            color: view.themeAccent; font.pixelSize: 13; font.bold: true }
+                    }
+                     Rectangle { id: topicCard; Layout.fillWidth: true
+                         property bool expanded: view.topicExpanded || !!topicField.text.trim()
+                                                 || writer.current.writing_mode !== "practice"
+                         property bool printed: !!topicField.text.trim() && !view.topicEditing
+                         Layout.preferredHeight: !expanded ? 44
+                            : printed ? printedTopic.implicitHeight + 64
+                            : Math.min(view.height > 650 ? 170 : 118,
+                                       Math.max(106, topicField.contentHeight + 40))
+                        color: printed ? view.paper : "#F8FAF7"; radius: printed ? 0 : 9
+                        visible: !view.reviewMode
+                         RowLayout { anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 10
+                             visible: !topicCard.expanded
+                             Text { text: "可自拟题目或写作任务"; Layout.fillWidth: true
+                                 color: view.muted; font.pixelSize: 12 }
+                             AppButton { text: "添加题目"; flat: true
+                                 onClicked: { view.topicExpanded = true; view.topicEditing = true; topicField.forceActiveFocus() } }
                          }
-                        Text { visible: view.reviewMode; text: writer.current.title || "作文批改"
-                            color: view.ink; font.pixelSize: 23; font.weight: Font.DemiBold }
-                        Rectangle { width: parent.width; height: 1; color: "#ECEDE6" }
-                        Item {
-                            width: parent.width
-                            height: parent.height - (view.reviewMode ? 133 : 171)
-                            ScrollView {
-                                anchors.fill: parent; visible: !view.reviewMode
+                         ColumnLayout { anchors.fill: parent; anchors.margins: 10; spacing: 5
+                             visible: topicCard.expanded
+                            RowLayout { Layout.fillWidth: true
+                                Text { text: writer.current.writing_mode === "practice" ? "主题或写作任务" : "本次题目"
+                                    color: view.ink; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                                Text { visible: !!topicField.text; text: writer.current.topic_source === "ai" ? "AI 模拟题"
+                                        : writer.current.topic_source === "ets_user_entry" ? "ETS 材料 · 自行录入" : "自定题目"
+                                    color: view.muted; font.pixelSize: 10 }
+                                AppButton { visible: writer.current.writing_mode === "practice" && !topicField.text.trim()
+                                    objectName: "collapseWritingTopicButton"; text: "收起"; flat: true
+                                    onClicked: { view.topicExpanded = false; view.topicEditing = false; draftText.forceActiveFocus() } }
+                                AppButton { visible: topicCard.printed; text: "修改题目"; flat: true
+                                    onClicked: { view.topicEditing = true; topicField.forceActiveFocus() } }
+                                AppButton { visible: view.topicEditing && !!topicField.text.trim()
+                                    text: "完成"; flat: true
+                                    onClicked: { view.saveNow(); view.topicEditing = false; draftText.forceActiveFocus() } }
+                            }
+                            Text { id: printedTopic; objectName: "printedWritingTopic"
+                                Layout.fillWidth: true; visible: topicCard.printed
+                                text: topicField.text; textFormat: Text.PlainText; wrapMode: Text.Wrap
+                                font.family: writer.current.language === "en" ? "Georgia" : "Yu Gothic UI"
+                                font.pixelSize: 16; lineHeight: 1.4; color: view.ink }
+                            ScrollView { Layout.fillWidth: true; Layout.fillHeight: true; visible: !topicCard.printed
                                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                                TextArea { id: draftText; width: Math.max(0, parent.width - 18); wrapMode: TextEdit.Wrap
-                                    placeholderText: "在这里输入作文正文。"
-                                    font.family: writer.current.language === "en" ? "Segoe UI" : "Yu Gothic UI"
-                                    font.pixelSize: 17; color: view.ink; selectByMouse: true
-                                    leftPadding: 10; rightPadding: 10; topPadding: 16; bottomPadding: 20
-                                    background: Rectangle { color: view.paper }
+                                TextArea { id: topicField; objectName: "writingTopicField"
+                                    implicitWidth: 0
+                                    placeholderText: "可自己输入题目，也可以用 AI 生成模拟题"; wrapMode: TextEdit.Wrap
+                                    font.pixelSize: 12; color: view.ink; background: Item {}
+                                    onActiveFocusChanged: { if (activeFocus) view.topicEditing = true }
                                     onTextChanged: autosave.restart() }
                             }
-                            ScrollView {
-                                anchors.fill: parent; visible: view.reviewMode && writer.current.language === "en"
-                                TextArea { text: writer.current.review ? writer.current.review.text : ""
-                                    readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
-                                    font.family: "Segoe UI"; font.pixelSize: 17; color: view.ink
-                                    leftPadding: 10; rightPadding: 16; topPadding: 16
-                                    background: Rectangle { color: view.paper } }
-                            }
-                            ScrollView { anchors.fill: parent
-                                visible: view.reviewMode && writer.current.language === "ja"
-                                TextArea { text: writer.current.review ? writer.current.review.text : ""
-                                    readOnly: true; wrapMode: TextEdit.Wrap; selectByMouse: true
-                                    font.family: "Yu Gothic UI"; font.pixelSize: 16
-                                    background: Rectangle { color: "#FCFDFC" } }
-                            }
-                        }
-                        Rectangle { width: parent.width; height: 1; color: "#ECEDE6" }
-                        RowLayout { width: parent.width; height: 38
-                            Text { Layout.fillWidth: true
-                                text: writer.busy ? writer.status + "  " + view.reviewElapsed + " 秒"
-                                      : writer.status || (view.reviewMode ? "批改稿为只读快照；原稿仍在草稿中。" : "自动保存  ·  " + (writer.current.language === "ja" ? draftText.text.trim().length + " 字" : (draftText.text.trim() ? draftText.text.trim().split(/\s+/).length : 0) + " 词"))
-                                color: "#748178"; font.pixelSize: 12; elide: Text.ElideRight }
-                            AppButton { visible: !view.reviewMode; text: "保存"; onClicked: view.saveNow() }
-                            AppButton { visible: !view.reviewMode; text: writer.busy ? "正在分析全文…" : "开始批改"; primary: true
-                                enabled: !writer.busy && draftText.text.trim().length > 0
-                                onClicked: { view.reviewElapsed = 0; view.saveNow(); writer.review() } }
                         }
                     }
-                }
-                Rectangle {
-                    visible: view.reviewMode || view.width >= 950 || view.showSide
-                    Layout.preferredWidth: Math.min(390, Math.max(300, view.width * 0.39))
-                    Layout.fillHeight: true; radius: 16; color: "#F9FAF7"; border.color: "#E6EAE3"
-                    Column {
-                        anchors.fill: parent; anchors.margins: 17; spacing: 12
-                        Text { text: view.reviewMode ? "AI 批改指导" : "灵感与素材"; color: view.ink
-                            font.pixelSize: 17; font.weight: Font.DemiBold }
-                        Text { visible: !view.reviewMode; text: "挑选想练的表达，写进自己的句子里"
-                            color: "#87938A"; font.pixelSize: 11; wrapMode: Text.Wrap; width: parent.width }
-                        Row { visible: !view.reviewMode; spacing: 6
-                            AppCombo { id: levelChoice; width: 128; height: 31
-                                model: writer.current.language === "en" ? ["托福风格", "通用英语"] : ["N2 及以下", "N3 及以下", "N4 及以下"] }
-                            AppButton { text: "换一组"; enabled: !writer.busy
-                                onClicked: { view.saveNow(); writer.generateMaterials(levelChoice.currentText) } }
-                        }
-                         AppCombo { visible: !view.reviewMode; width: parent.width; height: 31
-                             model: ["全部", "收藏", "语法", "词汇"]
-                             onActivated: view.materialFilter = ["全部", "收藏", "grammar", "vocabulary"][currentIndex] }
-                         RowLayout { visible: !view.reviewMode; width: parent.width; spacing: 5
-                             AppCombo { id: customKind; Layout.preferredWidth: 78; height: 34
-                                 model: ["词汇", "语法"] }
-                             TextField { id: manualTarget; Layout.fillWidth: true; height: 34
-                                 placeholderText: "多个词用逗号分隔"; font.pixelSize: 12
-                                 background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: manualTarget.activeFocus ? view.themeAccent : "#DCE4DE" } }
-                             AppButton { text: customKind.currentIndex === 0 ? "生成卡片" : "加入卡片"
-                                 enabled: manualTarget.text.trim().length > 0 && !writer.busy
-                                 onClicked: {
-                                     writer.addCustomMaterials(manualTarget.text, customKind.currentIndex === 0 ? "vocabulary" : "grammar")
-                                     manualTarget.clear()
-                                 } }
-                         }
-                        Text { visible: !view.reviewMode && view.selectedTargets.length > 0
-                            width: parent.width; wrapMode: Text.Wrap; font.pixelSize: 11; color: "#B43E51"
-                            text: "本次目标：" + view.selectedTargets.join("、") }
-                        ScrollView {
-                            id: materialsScroll
-                             width: parent.width; height: Math.max(80, parent.height - (view.reviewMode ? 70 : 231))
-                            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                            Column {
-                                width: Math.max(0, materialsScroll.width - 14); spacing: 8
-                                Text { visible: !view.reviewMode && writer.materials.length === 0
-                                    width: parent.width; wrapMode: Text.Wrap
-                                    text: "选择难度并生成一组语法、词汇；从中挑选想用的表达。"
-                                    color: "#87938A"; font.pixelSize: 12 }
-                                Repeater {
-                                     model: view.reviewMode ? [] : view.filteredMaterials()
-                                    delegate: Rectangle {
-                                        required property var modelData
-                                        width: parent.width; height: itemColumn.height + 18; radius: 7
-                                        color: view.selectedTargets.indexOf(modelData.expression) >= 0 ? settings.palette.selection : "#F8FAF8"
-                                        border.color: view.selectedTargets.indexOf(modelData.expression) >= 0 ? view.themeAccent : "#E7EBE7"
-                                        Column { id: itemColumn; x: 9; y: 9; width: parent.width - 18; spacing: 4
-                                            Text { width: parent.width; text: modelData.expression
-                                                wrapMode: Text.Wrap; color: view.ink; font.pixelSize: 13; font.bold: true }
-                                            Text { width: parent.width; text: modelData.meaning
-                                                wrapMode: Text.Wrap; color: "#66746A"; font.pixelSize: 11 }
-                                            Text { width: parent.width; text: modelData.example
-                                                wrapMode: Text.Wrap; color: "#839087"; font.pixelSize: 11 }
-                                        }
-                                         Text { anchors.right: parent.right; anchors.rightMargin: 8; y: 5
-                                             text: writer.favorites.some(function(value) { return value.expression === modelData.expression
-                                                 && value.language === writer.current.language }) ? "★" : "☆"
-                                             color: "#C68B35"; font.pixelSize: 18 }
-                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                            onClicked: {
-                                                var selected = view.selectedTargets.slice()
-                                                var at = selected.indexOf(modelData.expression)
-                                                if (at >= 0) selected.splice(at, 1)
-                                                else selected.push(modelData.expression)
-                                                view.selectedTargets = selected
-                                                writer.setTargets(JSON.stringify(selected))
-                                            } }
-                                         MouseArea { x: parent.width - 34; y: 0; width: 34; height: 35; z: 2
-                                             cursorShape: Qt.PointingHandCursor
-                                             onClicked: writer.toggleFavorite(modelData.expression) }
-                                    }
+                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 35; visible: !view.reviewMode
+                        Text { text: (writer.current.targets || []).length > 0
+                                ? "本次目标 · " + (writer.current.targets || []).join("、") : "本次未指定目标表达"
+                            Layout.fillWidth: true; elide: Text.ElideRight; color: view.muted; font.pixelSize: 11 }
+                        AppButton { text: writer.busy ? "生成中…" : "AI 模拟题"; flat: true; enabled: !writer.busy
+                            onClicked: { view.saveNow(); writer.generateTopic() } }
+                    }
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#E9EDE7" }
+                    ScrollView { Layout.fillWidth: true; Layout.fillHeight: true; visible: !view.reviewMode
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        TextArea { id: draftText; objectName: "writingDraftField"; width: Math.max(0, parent.width - 16)
+                            wrapMode: TextEdit.Wrap; selectByMouse: true
+                            placeholderText: "从这里开始写"
+                             font.family: writer.current.language === "en" ? "Georgia" : "Yu Gothic UI"
+                             font.pixelSize: 19
+                            cursorDelegate: Item { width: 0; height: 0 }
+                            Rectangle {
+                                id: smoothCaret; objectName: "animatedWritingCaret"
+                                x: draftText.cursorRectangle.x - 1; y: draftText.cursorRectangle.y
+                                width: 2; height: draftText.cursorRectangle.height; radius: 1
+                                color: view.themeAccent; z: 2
+                                visible: draftText.activeFocus && draftText.cursorVisible
+                                Behavior on x { NumberAnimation { duration: 85; easing.type: Easing.OutCubic } }
+                                Behavior on y { NumberAnimation { duration: 105; easing.type: Easing.OutCubic } }
+                                SequentialAnimation on opacity {
+                                    running: smoothCaret.visible; loops: Animation.Infinite
+                                    NumberAnimation { from: 1; to: 1; duration: 650 }
+                                    NumberAnimation { from: 0; to: 0; duration: 400 }
                                 }
-                                Text { visible: view.reviewMode; text: "整体点评"
-                                    color: view.ink; font.pixelSize: 14; font.bold: true }
-                                Text { visible: view.reviewMode; width: parent.width; wrapMode: Text.Wrap
-                                    text: writer.current.review ? writer.current.review.overall : ""
-                                    color: "#4A594E"; font.pixelSize: 12; lineHeight: 1.3 }
-                                Text { visible: view.reviewMode && !!(writer.current.review && writer.current.review.context)
-                                    width: parent.width; wrapMode: Text.Wrap
-                                    text: "全文语境：" + (writer.current.review ? writer.current.review.context : "")
-                                    color: "#53685B"; font.pixelSize: 12; lineHeight: 1.3 }
-                                Text { visible: view.reviewMode && writer.current.review
-                                                && (writer.current.review.strengths || []).length > 0
-                                    text: "写得好的地方"; color: view.ink; font.pixelSize: 14; font.bold: true }
-                                Repeater { model: view.reviewMode && writer.current.review
-                                                   ? writer.current.review.strengths || [] : []
-                                    delegate: Text { required property var modelData; width: parent.width
-                                        wrapMode: Text.Wrap; text: "• " + modelData
-                                        color: "#53685B"; font.pixelSize: 12 } }
-                                Text { visible: view.reviewMode && writer.current.review
-                                                && (writer.current.review.priorities || []).length > 0
-                                    text: "先改这些"; color: view.ink; font.pixelSize: 14; font.bold: true }
-                                Repeater { model: view.reviewMode && writer.current.review
-                                                   ? writer.current.review.priorities || [] : []
-                                    delegate: Text { required property var modelData; width: parent.width
-                                        wrapMode: Text.Wrap; text: "• " + modelData
-                                        color: "#775047"; font.pixelSize: 12 } }
-                                Text { visible: view.reviewMode && writer.current.review
-                                                && writer.current.review.language === "en"
-                                    text: "具体错误与修改建议"; color: view.ink; font.pixelSize: 14; font.bold: true }
-                                Repeater {
-                                    model: view.reviewMode && writer.current.review
-                                           && writer.current.review.language === "en"
-                                           ? (writer.current.review.issues || writer.current.review.marks || []) : []
-                                    delegate: Rectangle {
-                                        required property var modelData
-                                        width: parent.width; height: issueColumn.implicitHeight + 20
-                                        radius: 8; color: "#FFF7F8"; border.color: "#F0DCE1"
-                                        Column { id: issueColumn; x: 10; y: 10; width: parent.width - 20; spacing: 5
-                                            Text { width: parent.width; wrapMode: Text.Wrap
-                                                text: (modelData.category || "具体问题")
-                                                      + (modelData.repeats > 1 ? " · 原文中有 " + modelData.repeats + " 处" : "")
-                                                color: "#B44255"; font.pixelSize: 11; font.bold: true }
-                                            Text { width: parent.width; wrapMode: Text.Wrap
-                                                text: modelData.quote + " → " + (modelData.correction || "删除")
-                                                color: "#3E4B41"; font.pixelSize: 12; font.bold: true }
-                                            Text { width: parent.width; wrapMode: Text.Wrap
-                                                text: modelData.reason; color: "#685A5D"; font.pixelSize: 12 }
-                                        }
-                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                            onClicked: {
-                                                view.notebookOpen = true
-                                                view.noteSourceQuote = modelData.quote
-                                                noteText.text = "原文：" + modelData.quote + "\n建议：" + modelData.correction
-                                                                + "\n我的笔记："
-                                            } }
-                                    }
-                                }
-                                Text { visible: view.reviewMode && !!(writer.current.review && writer.current.review.revisedText)
-                                    text: "参考改写"; color: view.ink; font.pixelSize: 14; font.bold: true }
-                                Text { visible: view.reviewMode && !!(writer.current.review && writer.current.review.revisedText)
-                                    width: parent.width; wrapMode: Text.Wrap
-                                    text: writer.current.review ? writer.current.review.revisedText : ""
-                                    color: "#344A3B"; font.family: "Segoe UI"; font.pixelSize: 13; lineHeight: 1.3 }
-                                Text { visible: view.reviewMode && !!(writer.current.review && writer.current.review.targetFeedback)
-                                    width: parent.width; wrapMode: Text.Wrap
-                                    text: "目标表达：" + (writer.current.review ? writer.current.review.targetFeedback : "")
-                                    color: "#66746A"; font.pixelSize: 12 }
-                                Repeater {
-                                    model: view.reviewMode && writer.current.review && writer.current.review.language === "ja"
-                                           ? writer.current.review.advice || [] : []
+                            }
+                            color: view.ink; leftPadding: 10; rightPadding: 14; topPadding: 16; bottomPadding: 24
+                            background: Item {}
+                            onTextChanged: autosave.restart() }
+                    }
+                    ColumnLayout { Layout.fillWidth: true; Layout.fillHeight: true; visible: view.reviewMode; spacing: 9
+                        Text { text: writer.current.title || "作文批改"; Layout.fillWidth: true; elide: Text.ElideRight
+                            color: view.ink; font.pixelSize: 21; font.weight: Font.DemiBold }
+                        Text { text: "点击下划线查看对应建议"; color: view.muted; font.pixelSize: 11 }
+                        Flickable { id: essayFlick; Layout.fillWidth: true; Layout.fillHeight: true
+                            contentWidth: width; contentHeight: paragraphColumn.height + 20; clip: true
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                            Column { id: paragraphColumn; width: essayFlick.width - 16; spacing: 15
+                                Repeater { id: paragraphRepeater; model: writer.reviewParagraphs
                                     delegate: Rectangle { required property var modelData
-                                        width: parent.width; height: adviceText.implicitHeight + 18
-                                        radius: 7; color: "#FFF7F8"; border.color: "#F0DCE1"
-                                        Text { id: adviceText; x: 9; y: 9; width: parent.width - 18
-                                            wrapMode: Text.Wrap; font.pixelSize: 12; color: "#5E4047"
-                                            text: modelData.quote + " → " + modelData.suggestion + "\n" + modelData.reason }
+                                        width: paragraphColumn.width; height: paragraphText.implicitHeight + 12
+                                        radius: 7; color: "transparent"
+                                        Text { id: paragraphText; x: 6; y: 6; width: parent.width - 12
+                                            text: view.reviewHtmlFor(modelData); textFormat: Text.RichText; wrapMode: Text.Wrap
+                                             font.family: writer.current.language === "en" ? "Georgia" : "Yu Gothic UI"
+                                             font.pixelSize: 18; lineHeight: 1.5
+                                            color: view.ink; linkColor: view.themeAccent
+                                            onLinkActivated: function(link) {
+                                                var index = parseInt(link.split(":")[1])
+                                                if (!isNaN(index)) view.selectIssue(index)
+                                            }
+                                        }
                                     }
                                 }
-                                Repeater { model: view.reviewMode && writer.current.review ? writer.current.review.unanchored || [] : []
-                                    delegate: Text { required property var modelData; width: parent.width
-                                        wrapMode: Text.Wrap; text: modelData; color: "#6B585C"; font.pixelSize: 12 } }
                             }
                         }
+                    }
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#E9EDE7" }
+                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 38
+                        Text { Layout.fillWidth: true; elide: Text.ElideRight; color: view.muted; font.pixelSize: 11
+                            text: writer.busy ? (view.reviewWaiting ? writer.status + " · " + view.reviewElapsedSeconds + " 秒" : writer.status)
+                                : view.reviewMode ? "批改是提交时的快照；草稿仍可继续修改。"
+                                : "自动保存  ·  " + (writer.current.language === "ja" ? draftText.text.trim().length + " 字"
+                                  : (draftText.text.trim() ? draftText.text.trim().split(/\s+/).length : 0) + " 词") }
+                        AppButton { visible: view.reviewMode; text: "记笔记"; onClicked: notePopup.open() }
+                        AppButton { visible: !view.reviewMode; text: "保存草稿"; onClicked: view.saveNow() }
+                        AppButton { visible: !view.reviewMode; text: writer.busy ? "正在批改…" : "提交批改"; primary: true
+                            enabled: !writer.busy && draftText.text.trim().length > 0
+                            onClicked: { view.saveNow(); view.reviewElapsedSeconds = 0; view.reviewWaiting = true; writer.review() } }
                     }
                 }
             }
-            Rectangle {
-                visible: view.reviewMode
-                width: view.notebookOpen ? Math.min(310, parent.width * 0.36) : 100
-                height: view.notebookOpen ? 265 : 36
-                x: parent.width - width - 18; y: parent.height - height - 16
-                radius: 9; color: "#FFFFFF"; border.color: "#DCE4DE"; z: 5
-                Behavior on width { NumberAnimation { duration: 140 } }
-                Behavior on height { NumberAnimation { duration: 140 } }
-                Column { anchors.fill: parent; anchors.margins: view.notebookOpen ? 12 : 0; spacing: 8
-                    Rectangle { width: parent.width; height: 36; radius: 8; color: "#F8FAF8"
-                        Text { anchors.centerIn: parent; text: view.notebookOpen ? "笔记本  ·  收起" : "记笔记"
-                            color: "#33433A"; font.pixelSize: 12; font.bold: true }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                            onClicked: view.notebookOpen = !view.notebookOpen }
+            Rectangle { visible: (view.reviewMode ? view.reviewDrawerOpen : view.sideOpen) && !body.inlineSide
+                anchors.fill: parent; z: 1; color: "#370F1C16"
+                MouseArea { anchors.fill: parent; onClicked: {
+                    if (view.reviewMode) view.reviewDrawerOpen = false
+                    else view.setSide(false)
+                } } }
+            Rectangle { id: sidePanel; objectName: "writingSidePanel"; z: 2
+                visible: view.reviewMode ? (body.inlineSide || view.reviewDrawerOpen) : view.sideOpen
+                x: body.width - width
+                width: body.inlineSide ? view.clampSideWidth(view.sideWidth, body.width)
+                       : Math.min(view.sideWidth, body.width - 34)
+                height: body.height
+                radius: 14; color: "#F9FBF8"; border.color: "#E2E9E1"
+                Rectangle { x: 0; width: 3; height: parent.height; radius: 2
+                    color: sideResize.containsMouse || sideResize.pressed ? view.themeAccent : "transparent" }
+                MouseArea { id: sideResize; x: 0; width: 14; height: parent.height; z: 6
+                    visible: body.inlineSide; hoverEnabled: true; cursorShape: Qt.SizeHorCursor
+                    preventStealing: true
+                    onPositionChanged: function(mouse) {
+                        if (pressed) {
+                            var point = mapToItem(body, mouse.x, mouse.y)
+                            view.sideWidth = view.clampSideWidth(body.width - point.x, body.width)
+                        }
                     }
-                    TextArea { id: noteText; visible: view.notebookOpen
-                        width: parent.width; height: 156; wrapMode: TextEdit.Wrap
-                        placeholderText: "记下这次发现的错误…"
-                        background: Rectangle { color: "#FAFBFA"; border.color: "#DCE4DE"; radius: 6 } }
-                    Row { visible: view.notebookOpen; spacing: 7
-                        AppButton { text: "保存笔记"; enabled: noteText.text.trim().length > 0
-                             onClicked: { writer.addNote(noteText.text, view.noteSourceQuote); noteText.clear(); view.noteSourceQuote = "" } }
-                        AppButton { text: "全部笔记"; onClicked: view.openNotes() }
+                    onReleased: writer.setSideWidth(view.sideWidth)
+                }
+                ColumnLayout { anchors.fill: parent; anchors.margins: 16; spacing: 10
+                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 37; Layout.maximumHeight: 37
+                        Text { text: view.reviewMode ? "批改建议" : "写作素材"; Layout.fillWidth: true
+                            color: view.ink; font.pixelSize: 16; font.weight: Font.DemiBold }
+                        AppButton { text: writer.busy ? "生成中…" : "生成"
+                            visible: !view.reviewMode && view.sideMode !== "library"
+                                     && writer.current.practice_style !== "timed"
+                            enabled: !writer.busy
+                            onClicked: { view.saveNow(); writer.generateMaterials("常用、准确") } }
+                        AppButton { objectName: "addSidebarMaterialButton"
+                            text: "+ 添加"; visible: !view.reviewMode && view.sideMode !== "ai"
+                            onClicked: editorWritingMaterials.openAdd() }
+                        AppButton { visible: !body.inlineSide; text: "收起"; flat: true
+                            onClicked: { if (view.reviewMode) view.reviewDrawerOpen = false; else view.setSide(false) } }
+                    }
+                    ColumnLayout { Layout.fillWidth: true; Layout.fillHeight: true
+                        visible: !view.reviewMode; spacing: 8
+                        RowLayout { Layout.fillWidth: true; Layout.maximumHeight: 36
+                            AppButton { text: "全部"; primary: view.sideMode === "both"; Layout.fillWidth: true
+                                onClicked: view.sideMode = "both" }
+                            AppButton { text: "AI"; primary: view.sideMode === "ai"; Layout.fillWidth: true
+                                onClicked: view.sideMode = "ai" }
+                            AppButton { text: "我的"; primary: view.sideMode === "library"; Layout.fillWidth: true
+                                onClicked: view.sideMode = "library" }
+                            AppButton { text: "收藏"; primary: view.sideMode === "favorites"; Layout.fillWidth: true
+                                onClicked: view.sideMode = "favorites" }
+                        }
+                        WritingMaterials { id: editorWritingMaterials; objectName: "editorWritingMaterials"
+                            Layout.fillWidth: true; Layout.fillHeight: true
+                            compact: true; returnToDraft: true; sourceFilter: view.sideMode
+                            dialogWidth: view.width; dialogHeight: view.height; themeAccent: view.themeAccent
+                            onGenerateAi: { view.saveNow(); writer.generateMaterials("常用、准确") }
+                            onPreviewAi: function(material) {
+                                view.previewMaterial = material; materialPreviewPopup.open()
+                            }
+                            onTargetAi: function(expression) { view.toggleTarget(expression) }
+                            onCollectAi: function(material) {
+                                var kind = material.kind === "grammar" ? "grammar" : "vocabulary"
+                                var existed = false
+                                for (var n = 0; n < writer.library.length; n++) {
+                                    var entry = writer.library[n]
+                                    if (entry.essay_id === writer.currentEssayId
+                                            && entry.language === writer.current.language && entry.kind === kind
+                                            && entry.expression.toLowerCase() === material.expression.toLowerCase()) {
+                                        existed = true; break
+                                    }
+                                }
+                                var id = writer.saveMaterial(writer.current.language, kind,
+                                                             material.expression, "", "")
+                                if (id && !existed) {
+                                    writer.updateMaterial(id, material.meaning || "", material.usage || "",
+                                                          material.example || "", "")
+                                    writer.updateMaterialRelated(id, material.related || "")
+                                }
+                            }
+                        }
+                    }
+                    ColumnLayout { Layout.fillWidth: true; Layout.fillHeight: true; visible: view.reviewMode; spacing: 8
+                        RowLayout { Layout.fillWidth: true
+                            AppButton { text: "具体问题"; primary: view.reviewTab === "issues"; Layout.fillWidth: true
+                                onClicked: view.reviewTab = "issues" }
+                            AppButton { text: "全文建议"; primary: view.reviewTab === "overview"; Layout.fillWidth: true
+                                onClicked: view.reviewTab = "overview" }
+                        }
+                        Flickable { id: issueFlick; Layout.fillWidth: true; Layout.fillHeight: true
+                            visible: view.reviewTab === "issues"; contentWidth: width
+                            contentHeight: issueColumn.height + 10; clip: true; boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                            Column { id: issueColumn; width: issueFlick.width - 10; spacing: 8
+                                Text { width: parent.width; text: writer.reviewIssues.length + " 条具体建议"
+                                    color: view.muted; font.pixelSize: 11 }
+                                Repeater { id: issueRepeater; model: writer.reviewIssues
+                                    delegate: Rectangle { required property var modelData; required property int index
+                                        width: issueColumn.width; height: issueContent.implicitHeight + 18; radius: 9
+                                        color: view.activeIssue === index ? settings.palette.selection : view.paper
+                                        border.color: view.activeIssue === index ? view.themeAccent : "#E4EAE3"
+                                        Column { id: issueContent; x: 10; y: 9; width: parent.width - 20; spacing: 5
+                                            Text { width: parent.width; text: (index + 1) + " · "
+                                                    + (modelData.kind === "style" ? "可选表达" : modelData.category)
+                                                color: view.themeAccent; font.pixelSize: 11; font.weight: Font.DemiBold }
+                                            Text { width: parent.width; text: modelData.quote + " → " + modelData.correction
+                                                wrapMode: Text.Wrap; color: view.ink; font.pixelSize: 12; font.weight: Font.DemiBold }
+                                            Text { width: parent.width; text: modelData.reason; wrapMode: Text.Wrap
+                                                color: "#607066"; font.pixelSize: 11 }
+                                            Text { visible: !modelData.linked; text: "原文位置不唯一，保留为待核对建议"
+                                                color: view.muted; font.pixelSize: 10 }
+                                        }
+                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                            onClicked: view.selectIssue(index) }
+                                    }
+                                }
+                                Text { visible: writer.reviewIssues.length === 0; width: parent.width; wrapMode: Text.Wrap
+                                    text: "本次没有可定位的具体问题，请查看全文建议。"; color: view.muted; font.pixelSize: 12 }
+                            }
+                        }
+                        Flickable { Layout.fillWidth: true; Layout.fillHeight: true; visible: view.reviewTab === "overview"
+                            contentWidth: width; contentHeight: overviewColumn.height + 10; clip: true
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                            Column { id: overviewColumn; width: parent.width - 10; spacing: 12
+                                Text { text: "整体评价"; color: view.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
+                                Text { width: parent.width; wrapMode: Text.Wrap; text: writer.current.review ? writer.current.review.overall || "" : ""
+                                    color: "#536359"; font.pixelSize: 12; lineHeight: 1.4 }
+                                Text { visible: !!writer.current.review && (writer.current.review.priorities || []).length > 0
+                                    text: "优先修改"; color: view.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
+                                Repeater { model: writer.current.review ? writer.current.review.priorities || [] : []
+                                    delegate: Text { required property var modelData; width: overviewColumn.width; wrapMode: Text.Wrap
+                                        text: "• " + modelData; color: "#536359"; font.pixelSize: 12 } }
+                                Text { visible: !!(writer.current.review && writer.current.review.targetFeedback)
+                                    width: parent.width; wrapMode: Text.Wrap
+                                    text: "目标表达：" + (writer.current.review ? writer.current.review.targetFeedback || "" : "")
+                                    color: "#536359"; font.pixelSize: 12 }
+                                Text { visible: !!(writer.current.review && writer.current.review.revisedText)
+                                    text: "参考改写"; color: view.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
+                                Text { visible: !!(writer.current.review && writer.current.review.revisedText)
+                                    width: parent.width; wrapMode: Text.Wrap
+                                    text: writer.current.review ? writer.current.review.revisedText || "" : ""
+                                    color: "#536359"; font.pixelSize: 12; lineHeight: 1.4 }
+                            }
+                        }
+                        AppButton { text: "记下修改心得"; Layout.fillWidth: true; onClicked: notePopup.open() }
                     }
                 }
             }

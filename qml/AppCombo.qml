@@ -3,7 +3,7 @@ import QtQuick.Controls
 
 ComboBox {
     id: control
-    property color accent: settings.palette.accent
+    property color accent: settings.values.theme === "classic" ? "#4E8068" : settings.palette.accent
     property color selection: settings.palette.selection
     implicitHeight: 36
     implicitWidth: 128

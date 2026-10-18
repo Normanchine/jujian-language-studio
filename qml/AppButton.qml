@@ -5,7 +5,7 @@ Button {
     id: button
     property bool primary: false
     property bool destructive: false
-    property color accent: settings.palette.accent
+    property color accent: settings.values.theme === "classic" ? "#4E8068" : settings.palette.accent
     property color primaryColor: destructive ? "#C94859" : accent
     implicitWidth: Math.max(68, label.implicitWidth + 24)
     implicitHeight: 36

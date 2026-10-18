@@ -1,6 +1,6 @@
-# 句间 · Mainichi Nihongo
+# 句间 · Jujian Language Studio
 
-Windows 桌面精听与写作练习工具，支持日语、英语。打开音视频，逐句听、看字幕、查解释；写作时获得中文反馈。当前正式版本：**v0.1.0**（版本号可在应用“设置”页查看）。
+Windows 桌面精听与写作练习工具，支持日语、英语。英文项目名为 **Jujian Language Studio**。打开音视频，逐句听、看字幕、查解释；写作时获得中文反馈。当前正式版本：**v0.1.0**（版本号可在应用“设置”页查看）。
 
 使用 Python、PySide6 / QML、Whisper 和大模型接口开发，开发过程中使用 AI 辅助实现与迭代。目前主要在 Windows 11 上验证。
 
@@ -37,8 +37,8 @@ Windows 桌面精听与写作练习工具，支持日语、英语。打开音视
 在 PowerShell 中运行：
 
 ```powershell
-git clone https://github.com/Normanchine/mainichi-nihongo.git
-cd mainichi-nihongo
+git clone https://github.com/Normanchine/jujian-language-studio.git
+cd jujian-language-studio
 Set-ExecutionPolicy -Scope Process Bypass
 .\setup.ps1
 .\run.cmd

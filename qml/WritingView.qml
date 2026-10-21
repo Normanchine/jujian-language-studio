@@ -9,6 +9,7 @@ Item {
     property color ink: "#26342C"
     property color muted: "#78877D"
     property color paper: settings.palette.surface
+    property bool notesMode: false
     property bool libraryMode: true
     property bool librarySideOpen: false
     property bool reviewMode: false
@@ -17,9 +18,6 @@ Item {
     property int sideWidth: writer.sideWidth
     property string sideMode: "both"
     property string loadedPath: ""
-    property string draftQuery: ""
-    property string draftFilter: "all"
-    property bool favoritesOnly: false
     property string pendingDelete: ""
     property string pendingDeleteTitle: ""
     property int activeIssue: -1
@@ -30,13 +28,52 @@ Item {
     property bool reviewWaiting: false
     property bool topicExpanded: false
     property bool topicEditing: false
-    signal openNotes()
+    property bool taskBound: !!writer.current.task_id
+    property string taskState: writer.current.task_state || ""
+    onVisibleChanged: if (!visible) { selectionNote.close(); saveNow(); writer.pauseTask() }
+    Component.onDestruction: writer.pauseTask()
+    property var selectionOwner: null
+    property string selectionQuote: ""
+    onLibraryModeChanged: selectionNote.close()
+    onReviewModeChanged: selectionNote.close()
+    onNotesModeChanged: selectionNote.close()
+    function clearSelectionNote(source) {
+        if (source === selectionOwner) selectionNote.close()
+    }
+    function showSelectionNote(source) {
+        if (!view.visible || libraryMode || notesMode || notePopup.opened || !source.selectedText.trim()) return
+        selectionOwner = source
+        selectionQuote = source.selectedText
+        var rect = source.positionToRectangle(source.selectionEnd)
+        var point = source.mapToItem(view, rect.x, rect.y + rect.height)
+        selectionNote.x = Math.max(8, Math.min(view.width - selectionNote.width - 8, point.x))
+        selectionNote.y = Math.max(8, Math.min(view.height - selectionNote.height - 8, point.y + 7))
+        selectionNote.open()
+    }
+    Popup {
+        id: selectionNote
+        objectName: "writingSelectionAction"
+        parent: view
+        focus: false; modal: false; padding: 5
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle { radius: 10; color: settings.palette.surface; border.color: settings.palette.accent }
+        AppButton {
+            objectName: "writingSelectionSave"
+            text: "＋ 记笔记"; flat: true; focusPolicy: Qt.NoFocus
+            onClicked: {
+                var quote = view.selectionQuote
+                selectionNote.close()
+                view.saveNow()
+                notePopup.newNote(writer.currentPath, writer.current.language, quote)
+            }
+        }
+    }
 
     function saveNow() {
-        if (writer.currentPath && !reviewMode && !libraryMode)
+        if (writer.currentPath && !reviewMode && !libraryMode && !notesMode)
             writer.saveDraft(titleField.text, topicField.text, draftText.text)
     }
-    function showLibrary() { saveNow(); reviewMode = false; libraryMode = true; librarySideOpen = false }
+    function showLibrary() { saveNow(); notesMode = false; writer.pauseTask(); reviewMode = false; libraryMode = true; librarySideOpen = false }
     function showMaterials() {
         if (libraryMode || !writer.currentPath) librarySideOpen = true
         else { sideMode = "library"; setSide(true) }
@@ -44,12 +81,12 @@ Item {
     function startDraft(language, mode) {
         saveNow(); writer.newDraft(language)
         if (mode !== "practice") writer.setMode(mode)
-        libraryMode = false; librarySideOpen = false; reviewMode = false
+        notesMode = false; libraryMode = false; librarySideOpen = false; reviewMode = false
         elapsedSeconds = 0
     }
     function openDraft(path) {
         saveNow(); writer.openDraft(path)
-        libraryMode = false; librarySideOpen = false; reviewMode = false
+        notesMode = false; libraryMode = false; librarySideOpen = false; reviewMode = false
         elapsedSeconds = 0
     }
     function setSide(opened) { sideOpen = opened; writer.setSideOpen(opened) }
@@ -62,19 +99,6 @@ Item {
         if (at >= 0) values.splice(at, 1)
         else values.push(expression)
         writer.setTargets(JSON.stringify(values))
-    }
-    function visibleDrafts() {
-        var result = []
-        var query = draftQuery.trim().toLowerCase()
-        for (var i = 0; i < writer.drafts.length; i++) {
-            var item = writer.drafts[i]
-            if (favoritesOnly && !item.favorite) continue
-            if (draftFilter === "reviewed" && !item.reviewed) continue
-            if (draftFilter === "draft" && item.reviewed) continue
-            if (query && (item.title + " " + (item.preview || "")).toLowerCase().indexOf(query) < 0) continue
-            result.push(item)
-        }
-        return result
     }
     function selectIssue(index) {
         activeIssue = index; reviewTab = "issues"; reviewDrawerOpen = true
@@ -119,13 +143,57 @@ Item {
         function onReviewReady() { view.reviewWaiting = false; view.reviewMode = true; view.reviewDrawerOpen = false
             view.activeIssue = -1; view.reviewTab = "issues" }
     }
+    Connections {
+        target: draftScroll.contentItem
+        ignoreUnknownSignals: true
+        function onContentYChanged() { selectionNote.close() }
+    }
     Timer { id: autosave; interval: 900; onTriggered: view.saveNow() }
     Timer { interval: 1000; repeat: true
         running: view.visible && !view.libraryMode && !view.reviewMode
-                 && writer.current.practice_style === "timed" && writer.current.writing_mode !== "practice"
+                 && !view.taskBound && writer.current.practice_style === "timed" && writer.current.writing_mode !== "practice"
         onTriggered: view.elapsedSeconds++ }
     Timer { interval: 1000; repeat: true; running: writer.busy && view.reviewWaiting
         onTriggered: view.reviewElapsedSeconds++ }
+
+    WritingTaskPicker {
+        id: taskPicker
+        parent: Overlay.overlay
+        onSelected: function(taskId, fresh) {
+            view.saveNow()
+            writer.openWritingTask(taskId, fresh)
+            view.loadedPath = ""
+            writer.changed()
+            view.libraryMode = false; view.librarySideOpen = false; view.reviewMode = false
+        }
+    }
+
+    Popup {
+        id: submissionPopup
+        objectName: "writingSubmissionPopup"
+        parent: Overlay.overlay
+        anchors.centerIn: Overlay.overlay
+        modal: true; focus: true; padding: 22
+        width: Math.min(680, view.width - 32); height: Math.min(520, view.height - 32)
+        background: Rectangle { radius: 14; color: view.paper; border.color: "#DCE4DE" }
+        Overlay.modal: Rectangle { color: "#650F1C16" }
+        ColumnLayout {
+            anchors.fill: parent; spacing: 12
+            RowLayout {
+                Layout.fillWidth: true
+                Text { text: "本次作答原稿"; font.pixelSize: 18; color: view.ink; Layout.fillWidth: true }
+                AppButton { text: "关闭"; flat: true; onClicked: submissionPopup.close() }
+            }
+            Text { text: "结束作答时保存，后续修改不会覆盖。"; color: view.muted; font.pixelSize: 12 }
+            ScrollView {
+                Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                TextArea { width: parent.width; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
+                    text: (writer.current.submission || {}).text || "（空白作答）"
+                    font.family: "Georgia"; font.pixelSize: 18; color: view.ink; background: Item {} }
+            }
+        }
+    }
 
     Popup { id: deleteConfirm; objectName: "essayDeleteConfirm"
         modal: true; focus: true; anchors.centerIn: Overlay.overlay
@@ -147,24 +215,17 @@ Item {
             }
         }
     }
-    Popup { id: notePopup; modal: true; focus: true; anchors.centerIn: Overlay.overlay
-        width: Math.min(480, view.width - 40); height: 300; padding: 20
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        Overlay.modal: Rectangle { color: "#650F1C16" }
-        background: Rectangle { radius: 14; color: view.paper; border.color: "#E1E7E1" }
-        ColumnLayout { anchors.fill: parent; spacing: 11
-            Text { text: "写下这次的发现"; color: view.ink; font.pixelSize: 18; font.weight: Font.DemiBold }
-            TextArea { id: noteText; Layout.fillWidth: true; Layout.fillHeight: true
-                wrapMode: TextEdit.Wrap; placeholderText: "我发现……"; font.pixelSize: 13
-                background: Rectangle { radius: 9; color: "#FAFBFA"; border.color: "#DCE4DE" } }
-            RowLayout { Layout.fillWidth: true
-                AppButton { text: "全部笔记"; onClicked: { notePopup.close(); view.openNotes() } }
-                Item { Layout.fillWidth: true }
-                AppButton { text: "取消"; onClicked: notePopup.close() }
-                AppButton { text: "保存笔记"; primary: true; enabled: noteText.text.trim().length > 0
-                    onClicked: { writer.addNote(noteText.text, ""); noteText.clear(); notePopup.close() } }
-            }
-        }
+    function captureWritingNote() {
+        saveNow()
+        var quote = draftText.selectedText || ""
+        if (reviewMode && activeIssue >= 0 && writer.reviewIssues[activeIssue])
+            quote = writer.reviewIssues[activeIssue].correction || writer.reviewIssues[activeIssue].quote || ""
+        notePopup.newNote(writer.currentPath, writer.current.language, quote)
+    }
+    WritingNoteDialog {
+        id: notePopup
+        parent: Overlay.overlay
+        onOpenEssay: function(path) { view.openDraft(path) }
     }
     Popup { id: materialPreviewPopup; modal: true; focus: true; anchors.centerIn: Overlay.overlay
         width: Math.min(490, view.width - 36); height: 326; padding: 20
@@ -195,7 +256,7 @@ Item {
 
     ColumnLayout { anchors.fill: parent
         anchors.rightMargin: view.librarySideOpen && view.width >= 900 ? librarySidePanel.width + 14 : 0
-        spacing: 14; visible: view.libraryMode || !writer.currentPath
+        spacing: 14; visible: !view.notesMode && (view.libraryMode || !writer.currentPath)
         RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 48
             ColumnLayout { Layout.fillWidth: true; spacing: 3
                 Text { text: "写作"; color: view.ink; font.pixelSize: 22; font.weight: Font.DemiBold }
@@ -203,79 +264,28 @@ Item {
             AppButton { text: view.librarySideOpen ? "收起素材" : "我的素材"
                 onClicked: view.librarySideOpen = !view.librarySideOpen }
         }
-        ScrollView { id: writingScroll; Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-            Column { width: Math.max(0, writingScroll.width - 14); spacing: 16
-                Rectangle { width: parent.width; height: 120; radius: 14
-                    color: view.paper; border.color: "#E3E8E2"
-                    Column { x: 20; y: 18; width: parent.width - 40; spacing: 11
-                        Text { text: "开始新的练习"; color: view.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
-                        Row { spacing: 9
-                            AppButton { text: "日语表达练习"; onClicked: view.startDraft("ja", "practice") }
-                            AppButton { text: "英语自由写作"; onClicked: view.startDraft("en", "practice") }
-                            AppButton { text: "托福邮件"; onClicked: view.startDraft("en", "toefl_email") }
-                            AppButton { text: "托福学术讨论"; onClicked: view.startDraft("en", "toefl_discussion") }
-                        }
-                    }
-                }
-                Rectangle { width: parent.width; height: draftList.count === 0 ? 170 : Math.max(230, 80 + draftList.count * 91)
-                    radius: 14; color: view.paper; border.color: "#E3E8E2"
-                    ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 11
-                        RowLayout { Layout.fillWidth: true
-                            Text { text: "我的作文"; Layout.fillWidth: true; color: view.ink
-                                font.pixelSize: 17; font.weight: Font.DemiBold }
-                            AppButton { text: view.favoritesOnly ? "★ 收藏" : "☆ 收藏"; flat: true
-                                onClicked: view.favoritesOnly = !view.favoritesOnly }
-                        }
-                        RowLayout { Layout.fillWidth: true; spacing: 8
-                            TextField { id: searchDraft; Layout.fillWidth: true; Layout.preferredHeight: 35
-                                placeholderText: "搜索标题或正文"; font.pixelSize: 12; leftPadding: 12
-                                onTextChanged: view.draftQuery = text
-                                background: Rectangle { radius: 8; color: "#FAFBFA"
-                                    border.color: searchDraft.activeFocus ? view.themeAccent : "#DCE4DE" } }
-                            AppCombo { Layout.preferredWidth: 104; model: ["全部", "待批改", "已批改"]
-                                onActivated: view.draftFilter = ["all", "draft", "reviewed"][currentIndex] }
-                        }
-                        ListView { id: draftList; Layout.fillWidth: true; Layout.fillHeight: draftList.count > 0
-                            visible: draftList.count > 0
-                            clip: true; spacing: 7; model: view.visibleDrafts()
-                            delegate: Rectangle {
-                                required property var modelData
-                                width: draftList.width - 8; height: 79; radius: 9
-                                color: draftHover.containsMouse ? settings.palette.selection : "#FAFBFA"
-                                border.color: "#E6EBE6"
-                                Text { x: 14; y: 9; width: parent.width - 135; elide: Text.ElideRight
-                                    text: modelData.title; color: view.ink; font.pixelSize: 14; font.weight: Font.DemiBold }
-                                Text { x: 14; y: 31; width: parent.width - 135; elide: Text.ElideRight
-                                    text: modelData.preview || "空白草稿，点击继续写作"; color: "#6E7D72"; font.pixelSize: 11 }
-                                Text { x: 14; y: 56; width: parent.width - 135; elide: Text.ElideRight
-                                    text: (modelData.language === "ja" ? "日语" : "英语") + " · " + modelData.updatedLabel
-                                        + (modelData.reviewed ? " · 已有批改" : " · 待批改")
-                                    color: "#89958B"; font.pixelSize: 10 }
-                                MouseArea { id: draftHover; anchors.fill: parent; hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor; onClicked: view.openDraft(modelData.path) }
-                                AppButton { anchors.right: removeDraft.left; anchors.rightMargin: 3; y: 21; z: 2
-                                    text: modelData.favorite ? "★" : "☆"; flat: true
-                                    onClicked: writer.toggleDraftFavorite(modelData.path) }
-                                AppButton { id: removeDraft; anchors.right: parent.right; anchors.rightMargin: 8; y: 21; z: 2
-                                    text: "删除"; flat: true; onClicked: {
-                                        view.pendingDelete = modelData.path
-                                        view.pendingDeleteTitle = modelData.title
-                                        deleteConfirm.open()
-                                    } }
-                            }
-                        }
-                        Text { visible: draftList.count === 0; Layout.fillWidth: true
-                            text: writer.drafts.length === 0 ? "暂无作文" : "没有符合条件的作文"
-                            color: view.muted; font.pixelSize: 12 }
-                    }
-                }
-            }
+        WritingHome {
+            Layout.fillWidth: true; Layout.fillHeight: true
+            onStartDraft: function(language, mode) { view.startDraft(language, mode) }
+            onPickTask: taskPicker.open()
+            onOpenDraft: function(path) { view.openDraft(path) }
+            onDeleteDraft: function(path, title) { view.pendingDelete = path; view.pendingDeleteTitle = title; deleteConfirm.open() }
+            onAllNotes: { view.librarySideOpen = false; view.notesMode = true }
+            onNewNote: notePopup.newNote("", "en", "")
+            onEditNote: function(note) { notePopup.editNote(note) }
         }
     }
 
+    WritingNotes {
+        anchors.fill: parent; visible: view.notesMode
+        onBack: view.notesMode = false
+        onNewNote: notePopup.newNote("", "en", "")
+        onEditNote: function(note) { notePopup.editNote(note) }
+        onOpenDraft: function(path) { view.openDraft(path) }
+    }
+
     Rectangle { id: librarySidePanel; z: 5
-        visible: view.librarySideOpen && (view.libraryMode || !writer.currentPath)
+        visible: !view.notesMode && view.librarySideOpen && (view.libraryMode || !writer.currentPath)
         x: view.width - width
         width: Math.min(view.sideWidth, view.width >= 900 ? view.width - 500 : view.width - 28)
         height: view.height
@@ -305,7 +315,7 @@ Item {
     }
 
     ColumnLayout { anchors.fill: parent; spacing: 12
-        visible: !view.libraryMode && !!writer.currentPath
+        visible: !view.notesMode && !view.libraryMode && !!writer.currentPath
         RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 50; spacing: 8
             AppButton { text: "← 返回作文"; onClicked: view.showLibrary() }
             Text { Layout.fillWidth: true; text: view.reviewMode ? "对照批改" : "写作"
@@ -315,6 +325,8 @@ Item {
             AppButton { visible: view.reviewMode && !body.inlineSide
                 text: view.reviewDrawerOpen ? "收起建议" : "查看建议"
                 onClicked: view.reviewDrawerOpen = !view.reviewDrawerOpen }
+            AppButton { objectName: "writingCaptureNote"; text: "摘录 / 笔记"; flat: true
+                onClicked: view.captureWritingNote() }
             AppButton { visible: !view.reviewMode && !!writer.current.review; text: "查看上次批改"
                 onClicked: { view.saveNow(); view.reviewMode = true } }
             AppButton { visible: !view.reviewMode; text: view.sideOpen ? "收起素材" : "打开素材"
@@ -337,16 +349,16 @@ Item {
                         Text { text: writer.current.language === "ja" ? "日语" : "英语";
                             color: view.muted; font.pixelSize: 11 }
                     }
-                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 38; visible: !view.reviewMode
+                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 38; visible: !view.reviewMode && !view.taskBound
                         Text { text: writer.current.writing_mode === "toefl_email" ? "托福 · 邮件"
                                    : writer.current.writing_mode === "toefl_discussion" ? "托福 · 学术讨论"
                                    : writer.current.language === "ja" ? "日语表达" : "英语自由写作"
                             color: view.themeAccent; font.pixelSize: 12; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                        AppCombo { visible: writer.current.writing_mode !== "practice"; Layout.preferredWidth: 112
+                        AppCombo { visible: !view.taskBound && writer.current.writing_mode !== "practice"; Layout.preferredWidth: 112
                             model: ["引导练习", "限时模拟"]
                             currentIndex: writer.current.practice_style === "timed" ? 1 : 0
                             onActivated: { writer.setPracticeStyle(currentIndex === 1 ? "timed" : "guided"); view.elapsedSeconds = 0 } }
-                        Text { visible: writer.current.practice_style === "timed" && writer.current.writing_mode !== "practice"
+                        Text { visible: !view.taskBound && writer.current.practice_style === "timed" && writer.current.writing_mode !== "practice"
                             text: {
                                 var limit = writer.current.writing_mode === "toefl_email" ? 420 : 600
                                 var left = Math.max(0, limit - view.elapsedSeconds)
@@ -354,12 +366,42 @@ Item {
                             }
                             color: view.themeAccent; font.pixelSize: 13; font.bold: true }
                     }
+                    ColumnLayout {
+                        visible: view.taskBound && !view.reviewMode
+                        Layout.fillWidth: true; spacing: 7
+                        Text { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 11; color: view.muted
+                            text: (writer.current.writing_mode === "toefl_email" ? "托福专项 · 邮件" : "托福专项 · 学术讨论")
+                                + (writer.current.topic_source === "demo" ? " · 演示题（非真题，时限仅作演示）" : " · " + writer.current.task_source) }
+                        Flow {
+                            Layout.fillWidth: true; spacing: 8
+                            Text { objectName: "writingTaskTimer"; height: 34; verticalAlignment: Text.AlignVCenter
+                                text: view.taskState === "untimed" ? "不限时练习"
+                                    : view.taskState === "finished" || view.taskState === "editing" ? "作答已结束 · 原稿已保存"
+                                    : Math.floor(writer.taskRemaining / 60) + ":" + String(writer.taskRemaining % 60).padStart(2, "0")
+                                        + (view.taskState === "paused" ? " · 已暂停" : view.taskState === "ready" ? " · 待开始" : "")
+                                color: view.themeAccent; font.pixelSize: 14; font.weight: Font.DemiBold }
+                            AppButton { objectName: "writingTaskStart"; visible: view.taskState === "ready" || view.taskState === "paused"
+                                text: view.taskState === "ready" ? "开始计时" : "继续计时"; primary: true
+                                onClicked: { view.saveNow(); writer.startTask(); draftText.forceActiveFocus() } }
+                            AppButton { objectName: "writingTaskPause"; visible: view.taskState === "running"; text: "暂停"
+                                onClicked: { view.saveNow(); writer.pauseTask() } }
+                            AppButton { objectName: "writingTaskUntimed"; visible: ["ready", "paused", "untimed"].indexOf(view.taskState) >= 0
+                                text: view.taskState === "untimed" ? "切回计时" : "不限时练习"; flat: true
+                                onClicked: { view.saveNow(); writer.untimedTask() } }
+                            AppButton { objectName: "writingTaskFinish"; visible: ["running", "paused", "untimed"].indexOf(view.taskState) >= 0
+                                text: "结束作答"; onClicked: { view.saveNow(); writer.finishTask() } }
+                            AppButton { objectName: "writingTaskEdit"; visible: view.taskState === "finished"; text: "继续修改"
+                                onClicked: { writer.editTask(); draftText.forceActiveFocus() } }
+                            AppButton { objectName: "writingTaskOriginal"; visible: !!writer.current.submission; text: "查看原稿"; flat: true
+                                onClicked: submissionPopup.open() }
+                        }
+                    }
                      Rectangle { id: topicCard; Layout.fillWidth: true
                          property bool expanded: view.topicExpanded || !!topicField.text.trim()
                                                  || writer.current.writing_mode !== "practice"
                          property bool printed: !!topicField.text.trim() && !view.topicEditing
                          Layout.preferredHeight: !expanded ? 44
-                            : printed ? printedTopic.implicitHeight + 64
+                            : printed ? (view.taskBound ? Math.min(printedTopic.implicitHeight + 64, Math.max(130, view.height * 0.27)) : printedTopic.implicitHeight + 64)
                             : Math.min(view.height > 650 ? 170 : 118,
                                        Math.max(106, topicField.contentHeight + 40))
                         color: printed ? view.paper : "#F8FAF7"; radius: printed ? 0 : 9
@@ -376,24 +418,28 @@ Item {
                             RowLayout { Layout.fillWidth: true
                                 Text { text: writer.current.writing_mode === "practice" ? "主题或写作任务" : "本次题目"
                                     color: view.ink; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                                Text { visible: !!topicField.text; text: writer.current.topic_source === "ai" ? "AI 模拟题"
+                                Text { visible: !!topicField.text; text: view.taskBound ? "上下滚动查看完整题目" : writer.current.topic_source === "ai" ? "AI 模拟题"
                                         : writer.current.topic_source === "ets_user_entry" ? "ETS 材料 · 自行录入" : "自定题目"
                                     color: view.muted; font.pixelSize: 10 }
-                                AppButton { visible: writer.current.writing_mode === "practice" && !topicField.text.trim()
+                                AppButton { visible: !view.taskBound && writer.current.writing_mode === "practice" && !topicField.text.trim()
                                     objectName: "collapseWritingTopicButton"; text: "收起"; flat: true
                                     onClicked: { view.topicExpanded = false; view.topicEditing = false; draftText.forceActiveFocus() } }
-                                AppButton { visible: topicCard.printed; text: "修改题目"; flat: true
+                                AppButton { visible: topicCard.printed && !view.taskBound; text: "修改题目"; flat: true
                                     onClicked: { view.topicEditing = true; topicField.forceActiveFocus() } }
                                 AppButton { visible: view.topicEditing && !!topicField.text.trim()
                                     text: "完成"; flat: true
                                     onClicked: { view.saveNow(); view.topicEditing = false; draftText.forceActiveFocus() } }
                             }
+                            ScrollView { id: promptScroll; Layout.fillWidth: true; Layout.fillHeight: true; visible: topicCard.printed; clip: true
+                                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                                ScrollBar.vertical.policy: view.taskBound ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
                             Text { id: printedTopic; objectName: "printedWritingTopic"
-                                Layout.fillWidth: true; visible: topicCard.printed
+                                width: Math.max(0, promptScroll.availableWidth - 14); visible: topicCard.printed
                                 text: topicField.text; textFormat: Text.PlainText; wrapMode: Text.Wrap
                                 font.family: writer.current.language === "en" ? "Georgia" : "Yu Gothic UI"
                                 font.pixelSize: 16; lineHeight: 1.4; color: view.ink }
-                            ScrollView { Layout.fillWidth: true; Layout.fillHeight: true; visible: !topicCard.printed
+                            }
+                            ScrollView { Layout.fillWidth: true; Layout.fillHeight: true; visible: !topicCard.printed && !view.taskBound
                                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                                 TextArea { id: topicField; objectName: "writingTopicField"
                                     implicitWidth: 0
@@ -404,21 +450,26 @@ Item {
                             }
                         }
                     }
-                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 35; visible: !view.reviewMode
+                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 35; visible: !view.reviewMode && !view.taskBound
                         Text { text: (writer.current.targets || []).length > 0
                                 ? "本次目标 · " + (writer.current.targets || []).join("、") : "本次未指定目标表达"
                             Layout.fillWidth: true; elide: Text.ElideRight; color: view.muted; font.pixelSize: 11 }
-                        AppButton { text: writer.busy ? "生成中…" : "AI 模拟题"; flat: true; enabled: !writer.busy
+                        AppButton { visible: !view.taskBound; text: writer.busy ? "生成中…" : "AI 模拟题"; flat: true; enabled: !writer.busy
                             onClicked: { view.saveNow(); writer.generateTopic() } }
                     }
                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#E9EDE7" }
-                    ScrollView { Layout.fillWidth: true; Layout.fillHeight: true; visible: !view.reviewMode
+                    ScrollView { id: draftScroll; Layout.fillWidth: true; Layout.fillHeight: true; visible: !view.reviewMode
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                        TextArea { id: draftText; objectName: "writingDraftField"; width: Math.max(0, parent.width - 16)
-                            wrapMode: TextEdit.Wrap; selectByMouse: true
-                            placeholderText: "从这里开始写"
+                        TextArea { id: draftText; objectName: "writingDraftField"; implicitWidth: 0; width: Math.max(0, draftScroll.availableWidth)
+                            wrapMode: TextEdit.Wrap; selectByMouse: true; persistentSelection: true
+                            readOnly: view.taskBound && ["ready", "paused", "finished"].indexOf(view.taskState) >= 0
+                            placeholderText: view.taskBound && view.taskState === "ready" ? "点击开始计时，或选择不限时练习" : "从这里开始写"
                              font.family: writer.current.language === "en" ? "Georgia" : "Yu Gothic UI"
                              font.pixelSize: 19
+                            WritingSelectionHook {
+                                onNoteRequested: function(source) { view.showSelectionNote(source) }
+                                onSelectionCleared: function(source) { view.clearSelectionNote(source) }
+                            }
                             cursorDelegate: Item { width: 0; height: 0 }
                             Rectangle {
                                 id: smoothCaret; objectName: "animatedWritingCaret"
@@ -436,13 +487,13 @@ Item {
                             }
                             color: view.ink; leftPadding: 10; rightPadding: 14; topPadding: 16; bottomPadding: 24
                             background: Item {}
-                            onTextChanged: autosave.restart() }
+                            onTextChanged: { if (view.taskBound) writer.updateTaskText(text); autosave.restart() } }
                     }
                     ColumnLayout { Layout.fillWidth: true; Layout.fillHeight: true; visible: view.reviewMode; spacing: 9
                         Text { text: writer.current.title || "作文批改"; Layout.fillWidth: true; elide: Text.ElideRight
                             color: view.ink; font.pixelSize: 21; font.weight: Font.DemiBold }
                         Text { text: "点击下划线查看对应建议"; color: view.muted; font.pixelSize: 11 }
-                        Flickable { id: essayFlick; Layout.fillWidth: true; Layout.fillHeight: true
+                        Flickable { id: essayFlick; onContentYChanged: selectionNote.close(); Layout.fillWidth: true; Layout.fillHeight: true
                             contentWidth: width; contentHeight: paragraphColumn.height + 20; clip: true
                             boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
@@ -451,11 +502,13 @@ Item {
                                     delegate: Rectangle { required property var modelData
                                         width: paragraphColumn.width; height: paragraphText.implicitHeight + 12
                                         radius: 7; color: "transparent"
-                                        Text { id: paragraphText; x: 6; y: 6; width: parent.width - 12
-                                            text: view.reviewHtmlFor(modelData); textFormat: Text.RichText; wrapMode: Text.Wrap
+                                        WritingSelectableText { id: paragraphText; objectName: "writingReviewParagraph"; x: 6; y: 6; width: parent.width - 12
+                                            text: view.reviewHtmlFor(modelData); textFormat: TextEdit.RichText; wrapMode: TextEdit.Wrap
                                              font.family: writer.current.language === "en" ? "Georgia" : "Yu Gothic UI"
-                                             font.pixelSize: 18; lineHeight: 1.5
-                                            color: view.ink; linkColor: view.themeAccent
+                                             font.pixelSize: 18
+                                            color: view.ink
+                                            onNoteRequested: function(source) { view.showSelectionNote(source) }
+                                            onSelectionCleared: function(source) { view.clearSelectionNote(source) }
                                             onLinkActivated: function(link) {
                                                 var index = parseInt(link.split(":")[1])
                                                 if (!isNaN(index)) view.selectIssue(index)
@@ -473,10 +526,11 @@ Item {
                                 : view.reviewMode ? "批改是提交时的快照；草稿仍可继续修改。"
                                 : "自动保存  ·  " + (writer.current.language === "ja" ? draftText.text.trim().length + " 字"
                                   : (draftText.text.trim() ? draftText.text.trim().split(/\s+/).length : 0) + " 词") }
-                        AppButton { visible: view.reviewMode; text: "记笔记"; onClicked: notePopup.open() }
+                        AppButton { visible: view.reviewMode; text: "记笔记"; onClicked: view.captureWritingNote() }
                         AppButton { visible: !view.reviewMode; text: "保存草稿"; onClicked: view.saveNow() }
-                        AppButton { visible: !view.reviewMode; text: writer.busy ? "正在批改…" : "提交批改"; primary: true
+                        AppButton { objectName: "writingReviewSubmit"; visible: !view.reviewMode; text: writer.busy ? "正在批改…" : "提交批改"; primary: true
                             enabled: !writer.busy && draftText.text.trim().length > 0
+                                && (!view.taskBound || ["finished", "editing", "untimed"].indexOf(view.taskState) >= 0)
                             onClicked: { view.saveNow(); view.reviewElapsedSeconds = 0; view.reviewWaiting = true; writer.review() } }
                     }
                 }
@@ -571,7 +625,7 @@ Item {
                             AppButton { text: "全文建议"; primary: view.reviewTab === "overview"; Layout.fillWidth: true
                                 onClicked: view.reviewTab = "overview" }
                         }
-                        Flickable { id: issueFlick; Layout.fillWidth: true; Layout.fillHeight: true
+                        Flickable { id: issueFlick; onContentYChanged: selectionNote.close(); Layout.fillWidth: true; Layout.fillHeight: true
                             visible: view.reviewTab === "issues"; contentWidth: width
                             contentHeight: issueColumn.height + 10; clip: true; boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
@@ -587,22 +641,25 @@ Item {
                                             Text { width: parent.width; text: (index + 1) + " · "
                                                     + (modelData.kind === "style" ? "可选表达" : modelData.category)
                                                 color: view.themeAccent; font.pixelSize: 11; font.weight: Font.DemiBold }
-                                            Text { width: parent.width; text: modelData.quote + " → " + modelData.correction
-                                                wrapMode: Text.Wrap; color: view.ink; font.pixelSize: 12; font.weight: Font.DemiBold }
+                                            Text { width: parent.width; text: modelData.quote; textFormat: Text.PlainText
+                                                wrapMode: Text.Wrap; color: view.muted; font.pixelSize: 12 }
+                                            WritingSelectableText { objectName: "writingCorrectedSentence"; width: parent.width; text: modelData.correction
+                                                color: view.ink; font.pixelSize: 13; font.weight: Font.DemiBold
+                                                onNoteRequested: function(source) { view.showSelectionNote(source) }
+                                                onSelectionCleared: function(source) { view.clearSelectionNote(source) } }
                                             Text { width: parent.width; text: modelData.reason; wrapMode: Text.Wrap
                                                 color: "#607066"; font.pixelSize: 11 }
                                             Text { visible: !modelData.linked; text: "原文位置不唯一，保留为待核对建议"
                                                 color: view.muted; font.pixelSize: 10 }
                                         }
-                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                            onClicked: view.selectIssue(index) }
+                                        TapHandler { onTapped: view.selectIssue(index) }
                                     }
                                 }
                                 Text { visible: writer.reviewIssues.length === 0; width: parent.width; wrapMode: Text.Wrap
                                     text: "本次没有可定位的具体问题，请查看全文建议。"; color: view.muted; font.pixelSize: 12 }
                             }
                         }
-                        Flickable { Layout.fillWidth: true; Layout.fillHeight: true; visible: view.reviewTab === "overview"
+                        Flickable { id: overviewFlick; objectName: "writingOverviewScroll"; onContentYChanged: selectionNote.close(); Layout.fillWidth: true; Layout.fillHeight: true; visible: view.reviewTab === "overview"
                             contentWidth: width; contentHeight: overviewColumn.height + 10; clip: true
                             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                             Column { id: overviewColumn; width: parent.width - 10; spacing: 12
@@ -620,13 +677,15 @@ Item {
                                     color: "#536359"; font.pixelSize: 12 }
                                 Text { visible: !!(writer.current.review && writer.current.review.revisedText)
                                     text: "参考改写"; color: view.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
-                                Text { visible: !!(writer.current.review && writer.current.review.revisedText)
-                                    width: parent.width; wrapMode: Text.Wrap
+                                WritingSelectableText { objectName: "writingAiRevisedText"; visible: !!(writer.current.review && writer.current.review.revisedText)
+                                    width: parent.width
                                     text: writer.current.review ? writer.current.review.revisedText || "" : ""
-                                    color: "#536359"; font.pixelSize: 12; lineHeight: 1.4 }
+                                    color: "#536359"; font.pixelSize: 14
+                                    onNoteRequested: function(source) { view.showSelectionNote(source) }
+                                    onSelectionCleared: function(source) { view.clearSelectionNote(source) } }
                             }
                         }
-                        AppButton { text: "记下修改心得"; Layout.fillWidth: true; onClicked: notePopup.open() }
+                        AppButton { text: "记下修改心得"; Layout.fillWidth: true; onClicked: view.captureWritingNote() }
                     }
                 }
             }

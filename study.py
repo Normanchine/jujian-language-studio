@@ -10,6 +10,7 @@ import sys
 import os
 import re
 import copy
+import time
 from threading import Event
 from bisect import bisect_right
 from datetime import datetime
@@ -159,6 +160,8 @@ class StudyBridge(QObject):
         self._project_file: Path | None = None
         self._active_index = 0
         self._active_word = -1
+        self._navigation_index = 0
+        self._navigation_time = 0.0
         self._loop = False
         self._busy = False
         self._status = "打开本地音频或视频。"
@@ -528,6 +531,7 @@ class StudyBridge(QObject):
             self.stateChanged.emit()
             return
         try:
+            self._navigation_time = 0.0
             local = QUrl(url).toLocalFile() if url.startswith("file:") else url
             self._open_media_path(Path(local))
         except (OSError, ValueError, KeyError, av.error.FFmpegError) as exc:
@@ -576,10 +580,21 @@ class StudyBridge(QObject):
     def chooseSentence(self, index: int) -> None:
         segments = self._project.get("segments", [])
         if 0 <= index < len(segments):
+            self._navigation_index = index
+            self._navigation_time = time.monotonic()
             self._active_index = index
             self._active_word = -1
             self.stateChanged.emit()
             self.seekRequested.emit(round(segments[index]["start"] * 1000))
+
+    @Slot(int)
+    def navigateSentence(self, direction: int) -> None:
+        segments = self._project.get("segments", [])
+        if not segments or direction not in (-1, 1):
+            return
+        recent = time.monotonic() - getattr(self, "_navigation_time", 0) < 2.0
+        anchor = getattr(self, "_navigation_index", self._active_index) if recent else self._active_index
+        self.chooseSentence(max(0, min(len(segments) - 1, anchor + direction)))
 
     @Slot(int)
     def updatePlayback(self, position_ms: int) -> None:
@@ -587,6 +602,10 @@ class StudyBridge(QObject):
         segments = self._project.get("segments", [])
         if not segments:
             return
+        if self._navigation_time and 0 <= self._navigation_index < len(segments):
+            target = segments[self._navigation_index]
+            if position_ms < target["start"] * 1000 - 400 or position_ms > target["end"] * 1000 + 400:
+                self._navigation_time = 0.0
         seconds = position_ms / 1000
         index = max(0, min(len(segments) - 1, bisect_right([s["start"] for s in segments], seconds) - 1))
         words = segments[index].get("words", [])
@@ -686,9 +705,7 @@ class StudyBridge(QObject):
         if getattr(sys, "frozen", False):
             model_root = ASSETS / "models"
         else:
-            model_root = ROOT.parent / "bilibili-sync-probe" / "models"
-            if not (model_root / "small.pt").is_file():
-                model_root = ROOT / "models"
+            model_root = ROOT / "models"
         self._process = QProcess(self)
         self._process.setProgram(sys.executable)
         job_args = [self._project["media_path"], str(output), str(model_root), self._transcribe_language]
@@ -850,17 +867,19 @@ class StudyBridge(QObject):
     def organizeSubtitles(self) -> None:
         if self._busy or self._enriching or not self._project_file or (self._split_thread and self._split_thread.isRunning()):
             return
-        if self._project.get("language") != "en":
-            self._status = "当前整理入口用于带逐词时间戳的英语字幕。"
+        language = self._project.get("language")
+        if language not in {"ja", "en"}:
+            self._status = "字幕整理需要日语或英语的逐词时间戳。"
             self.stateChanged.emit()
             return
         self._splitting = self._busy = True
         self._split_source = copy.deepcopy(self._project.get("segments", []))
-        self._split_thread = SegmentationThread(self._split_source, "en")
+        self._split_thread = SegmentationThread(self._split_source, language)
         self._split_thread.progress.connect(self._split_progress)
         self._split_thread.ready.connect(self._split_ready)
         self._split_thread.failed.connect(self._split_failed)
-        self._status = "正在整理字幕；本地后端可辅助分段和翻译，云端后端可在整理后点击中文翻译。"
+        self._status = ("正在按句末和停顿整理日语字幕；新拆分句子的译文可稍后重新翻译。" if language == "ja" else
+                        "正在整理字幕；本地后端可辅助分段和翻译，云端后端可在整理后点击中文翻译。")
         self.stateChanged.emit()
         self._split_thread.start()
 
@@ -879,7 +898,7 @@ class StudyBridge(QObject):
             if self._project.get("segments", []) != self._split_source:
                 raise ValueError("字幕在处理期间已改变，请重新整理")
             if audit.get("changed"):
-                validated = validate_segments(segments, float(self._project["duration"]), "en")
+                validated = validate_segments(segments, float(self._project["duration"]), self._project.get("language", "ja"))
                 backup = DATA / "subtitle-backups" / f"{self._project_file.stem}-{datetime.now():%Y%m%d-%H%M%S}.json"
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 backup.write_text(json.dumps(self._project, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import html
+import os
+import math
 import json
 import re
 import sys
@@ -11,10 +13,11 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, Property, QThread, Signal, Slot
+from PySide6.QtCore import QObject, Property, QThread, QTimer, Signal, Slot
 
 from ai_client import ask_json
 from review_guidance import review_english
+from writing_tasks import load_tasks
 
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 ESSAYS = ROOT / "data" / "essays"
@@ -371,7 +374,7 @@ class WritingBridge(QObject):
     reviewReady = Signal()
     topicReady = Signal()
 
-    def __init__(self) -> None:
+    def __init__(self, catalogue_path: Path | None = None) -> None:
         super().__init__()
         ESSAYS.mkdir(parents=True, exist_ok=True)
         NOTES.mkdir(parents=True, exist_ok=True)
@@ -416,6 +419,16 @@ class WritingBridge(QObject):
             self._side_width = max(270, min(650, int(layout.get("side_width", 314))))
         except (OSError, ValueError, TypeError, AttributeError):
             self._side_width = 314
+        assets = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else ROOT
+        demo = catalogue_path is None and os.environ.get("JUJIAN_WRITING_DEMO") == "1"
+        catalogue = Path(catalogue_path) if catalogue_path is not None else assets / "assets" / "writing-demo.json" if demo else ROOT / "data" / "toefl-writing.json"
+        self._tasks = load_tasks(catalogue, allow_demo=demo)
+        self._task_live_text = None
+        self._clock_started = None
+        self._clock_base = 0.0
+        self._clock = QTimer(self)
+        self._clock.setInterval(250)
+        self._clock.timeout.connect(self._tick_task)
         self.refresh()
 
     @Property("QVariantList", notify=draftsChanged)
@@ -461,6 +474,153 @@ class WritingBridge(QObject):
 
     @Property(str, notify=materialChanged)
     def materialStatus(self) -> str: return self._material_status
+
+    @staticmethod
+    def _task_attempt_state(draft: dict) -> str:
+        submission = draft.get("submission", {})
+        if isinstance(submission, dict) and str(submission.get("text", "")).strip():
+            return "completed"
+        if not str(draft.get("text", "")).strip():
+            return "not_started"
+        return "completed" if draft.get("task_state") in {"finished", "editing"} else "in_progress"
+
+    @Property("QVariantList", notify=changed)
+    def writingTasks(self) -> list[dict]:
+        attempts = {}
+        for path in ESSAYS.glob("*.json"):
+            try:
+                draft = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(draft, dict) and draft.get("task_id"):
+                    attempts.setdefault(draft["task_id"], []).append(draft)
+            except (OSError, ValueError):
+                continue
+        rows = []
+        for task in self._tasks:
+            drafts = attempts.get(task["id"], [])
+            completed = [d for d in drafts if self._task_attempt_state(d) == "completed"]
+            pending = [d for d in drafts if self._task_attempt_state(d) == "in_progress"]
+            state = "in_progress" if pending else "completed" if completed else "not_started"
+            completed_at = max((str(d.get("submission", {}).get("at", d.get("updated", ""))) for d in completed), default="")
+            rows.append({**task, "state": state,
+                         "progress": {"not_started": "未开始", "in_progress": "进行中", "completed": "已完成"}[state],
+                         "completed": bool(completed), "completed_at": completed_at,
+                         "has_review": any(bool(d.get("review")) for d in drafts),
+                         "attempts": len(completed) + len(pending),
+                         "latest_activity": max((str(d.get("updated", "")) for d in drafts), default="")})
+        return rows
+
+    @Property(int, notify=changed)
+    def taskRemaining(self) -> int:
+        return max(0, math.ceil(self._draft.get("task_limit", 0) - self._draft.get("task_elapsed", 0)))
+
+    @Slot(str, bool)
+    def openWritingTask(self, task_id: str, fresh: bool) -> None:
+        task = next((t for t in self._tasks if t["id"] == task_id), None)
+        if not task:
+            return
+        if not fresh:
+            candidates = []
+            for path in ESSAYS.glob("*.json"):
+                try:
+                    draft = json.loads(path.read_text(encoding="utf-8"))
+                    if draft.get("task_id") == task_id:
+                        candidates.append(({"not_started": 0, "completed": 1, "in_progress": 2}[self._task_attempt_state(draft)], draft.get("updated", ""), path))
+                except (OSError, ValueError):
+                    pass
+            if candidates:
+                self.openDraft(str(max(candidates)[2]))
+                return
+        self.newDraft("en")
+        self._draft.update({"title": task["set_title"] + " · " + task["title"],
+                            "writing_mode": task["kind"], "topic": task["prompt"],
+                            "topic_source": task["review_status"], "task_id": task["id"],
+                            "set_id": task["set_id"], "task_version": task["version"],
+                            "task_prompt": task["prompt"], "task_source": task["source"],
+                            "task_limit": task["limit_seconds"], "task_elapsed": 0.0,
+                            "task_state": "ready", "attempt_id": self._file.stem})
+        atomic_json(self._file, self._draft)
+        self.refresh()
+        self.changed.emit()
+        self.topicReady.emit()
+
+    def _persist_task(self) -> None:
+        if self._file:
+            self._draft["updated"] = now()
+            atomic_json(self._file, self._draft)
+        self.changed.emit()
+
+    @Slot(str)
+    def updateTaskText(self, text: str) -> None:
+        # Keep the deadline snapshot current even during the autosave debounce.
+        if self._draft.get("task_id") and self._draft.get("task_state") != "finished":
+            self._task_live_text = (self.currentPath, text)
+
+    @Slot()
+    def startTask(self) -> None:
+        if self._draft.get("task_state") not in {"ready", "paused"}:
+            return
+        self._clock_base = float(self._draft.get("task_elapsed", 0))
+        self._clock_started = perf_counter()
+        self._draft["task_state"] = "running"
+        self._clock.start()
+        self._persist_task()
+
+    def _tick_task(self) -> None:
+        if self._clock_started is None:
+            return
+        elapsed = min(float(self._draft["task_limit"]), self._clock_base + perf_counter() - self._clock_started)
+        previous = self._draft.get("task_elapsed", 0)
+        self._draft["task_elapsed"] = elapsed
+        if elapsed >= self._draft["task_limit"]:
+            self._finish_task("timeout")
+        elif int(previous) != int(elapsed):
+            self._persist_task()
+
+    @Slot()
+    def pauseTask(self) -> None:
+        if self._clock_started is None:
+            return
+        self._tick_task()
+        if self._draft.get("task_state") == "running":
+            self._draft["task_state"] = "paused"
+            self._clock.stop()
+            self._clock_started = None
+            self._persist_task()
+
+    def _finish_task(self, reason: str) -> None:
+        self._clock.stop()
+        self._clock_started = None
+        if self._task_live_text and self._task_live_text[0] == self.currentPath:
+            self._draft["text"] = self._task_live_text[1]
+        self._draft["task_state"] = "finished"
+        if "submission" not in self._draft:
+            self._draft["submission"] = {"text": self._draft.get("text", ""),
+                                         "elapsed": self._draft.get("task_elapsed", 0),
+                                         "reason": reason, "at": now()}
+        self._status = "时间到，原稿已保存。" if reason == "timeout" else "作答结束，原稿已保存。"
+        self._persist_task()
+        self.refresh()
+
+    @Slot()
+    def finishTask(self) -> None:
+        if not self._draft.get("task_id") or self._draft.get("task_state") in {"finished", "editing"}:
+            return
+        self.pauseTask()
+        if self._draft.get("task_state") != "finished":
+            self._finish_task("manual")
+
+    @Slot()
+    def editTask(self) -> None:
+        if self._draft.get("task_state") == "finished":
+            self._draft["task_state"] = "editing"
+            self._persist_task()
+
+    @Slot()
+    def untimedTask(self) -> None:
+        if self._draft.get("task_state") not in {"ready", "paused", "untimed"}:
+            return
+        self._draft["task_state"] = "ready" if self._draft["task_state"] == "untimed" else "untimed"
+        self._persist_task()
 
     @Slot()
     def clearMaterialStatus(self) -> None:
@@ -528,7 +688,13 @@ class WritingBridge(QObject):
         for path in NOTES.glob("*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                notes.append({"path": str(path), **data})
+                essay_id = data.get("essay_id", "")
+                linked = next((d for d in drafts if Path(d["path"]).stem == essay_id), None) if essay_id else None
+                if not linked and not essay_id and data.get("essayTitle"):
+                    by_title = [d for d in drafts if d["title"] == data["essayTitle"]]
+                    linked = by_title[0] if len(by_title) == 1 else None
+                notes.append({**data, "path": str(path), "essayPath": linked["path"] if linked else "",
+                              "essayTitle": linked["title"] if linked else data.get("essayTitle", "")})
             except (OSError, ValueError):
                 continue
         self._notes = sorted(notes, key=lambda item: item.get("updated", ""), reverse=True)
@@ -538,6 +704,7 @@ class WritingBridge(QObject):
     def newDraft(self, language: str) -> None:
         if language not in {"ja", "en"}:
             language = "ja"
+        self.pauseTask()
         self._file = ESSAYS / f"{uuid4().hex}.json"
         self._draft = {"schema_version": 1, "title": '未命名作文', "language": language,
                        "topic": "", "text": "", "targets": [], "writing_mode": "practice",
@@ -552,6 +719,7 @@ class WritingBridge(QObject):
 
     @Slot(str)
     def openDraft(self, path: str) -> None:
+        self.pauseTask()
         file = Path(path)
         if file.parent != ESSAYS or not file.is_file():
             self._status = '作文不存在。'
@@ -560,6 +728,9 @@ class WritingBridge(QObject):
         try:
             self._draft = json.loads(file.read_text(encoding="utf-8"))
             self._file = file
+            if self._draft.get("task_state") == "running":
+                self._draft["task_state"] = "paused"
+                atomic_json(file, self._draft)
             self._materials = self._draft.get("materials", [])
             self._status = '已打开作文。'
             self.changed.emit()
@@ -571,6 +742,8 @@ class WritingBridge(QObject):
     def saveDraft(self, title: str, topic: str, text: str) -> None:
         if not self._file:
             return
+        if self._draft.get("task_id"):
+            topic = self._draft["task_prompt"]
         fields = {"title": title.strip() or '未命名作文', "topic": topic.strip(), "text": text}
         if all(self._draft.get(key) == value for key, value in fields.items()):
             return
@@ -789,6 +962,8 @@ class WritingBridge(QObject):
 
     @Slot(str)
     def setMode(self, mode: str) -> None:
+        if self._draft.get("task_id"):
+            return
         if not self._file or mode not in {"practice", "toefl_email", "toefl_discussion"}:
             return
         if self._draft.get("language") == "ja" and mode != "practice":
@@ -799,6 +974,8 @@ class WritingBridge(QObject):
 
     @Slot(str)
     def setPracticeStyle(self, style: str) -> None:
+        if self._draft.get("task_id"):
+            return
         if not self._file or style not in {"guided", "timed"}:
             return
         self._draft["practice_style"] = style
@@ -830,7 +1007,7 @@ class WritingBridge(QObject):
 
     @Slot()
     def generateTopic(self) -> None:
-        if self.busy or not self._file:
+        if self.busy or not self._file or self._draft.get("task_id"):
             return
         self._status = '正在生成写作题目…'
         self._job = WritingJob("topic", dict(self._draft))
@@ -857,6 +1034,8 @@ class WritingBridge(QObject):
     @Slot()
     def review(self) -> None:
         if self.busy or not self._file:
+            return
+        if self._draft.get("task_id") and self._draft.get("task_state") not in {"finished", "editing", "untimed"}:
             return
         self._status = '正在通读整篇作文并整理建议…'
         self._job = WritingJob("review", dict(self._draft))
@@ -909,14 +1088,36 @@ class WritingBridge(QObject):
         self._status = f'AI 处理失败：{detail}'
         self.changed.emit()
 
-    @Slot(str, str)
-    def addNote(self, text: str, source_quote: str) -> None:
-        if not text.strip():
-            return
-        note = {"schema_version": 1, "language": self._draft.get("language", "ja"),
-                "text": text.strip(), "sourceQuote": source_quote.strip(),
-                "essayTitle": self._draft.get("title", ""), "updated": now()}
-        atomic_json(NOTES / f"{uuid4().hex}.json", note)
+    @Slot(str, str, str, str, str, result=bool)
+    def saveWritingNote(self, path: str, text: str, source_quote: str, essay_path: str, language: str) -> bool:
+        if not text.strip() and not source_quote.strip():
+            return False
+        note_file = Path(path) if path else NOTES / f"{uuid4().hex}.json"
+        if note_file.parent.resolve() != NOTES.resolve() or note_file.suffix != ".json":
+            return False
+        note = {}
+        if path:
+            try:
+                note = json.loads(note_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return False
+        essay = next((d for d in self._drafts if d["path"] == essay_path), None)
+        if essay_path and not essay:
+            self._status = '原作文已不存在，请重新选择关联。'
+            self.changed.emit()
+            return False
+        # An older note may have only a title; editing its content preserves that history.
+        legacy_title = note.get("essayTitle", "") if not note.get("essay_id") and not essay else ""
+        note.update({"schema_version": 2, "language": essay["language"] if essay else ("ja" if language == "ja" else "en"),
+                     "text": text.strip(), "sourceQuote": source_quote.strip(),
+                     "essay_id": Path(essay["path"]).stem if essay else "",
+                     "essayTitle": essay["title"] if essay else legacy_title, "updated": now()})
+        atomic_json(note_file, note)
         self._status = '笔记已保存。'
         self.refresh()
         self.changed.emit()
+        return True
+
+    @Slot(str, str)
+    def addNote(self, text: str, source_quote: str) -> None:
+        self.saveWritingNote("", text, source_quote, self.currentPath, self._draft.get("language", "ja"))

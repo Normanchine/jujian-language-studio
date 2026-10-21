@@ -36,6 +36,53 @@ def merge_english_pauses(segments: list[dict]) -> list[dict]:
     return merged
 
 
+def merge_japanese_fragments(segments: list[dict], minimum_seconds: float = 1.0) -> list[dict]:
+    """Keep short ASR fragments with nearby speech instead of making tiny study cards."""
+    merged = [{**item, "words": list(item.get("words", []))} for item in segments]
+    index = 0
+    while index < len(merged):
+        fragment = merged[index]
+        if fragment["end"] - fragment["start"] >= minimum_seconds or len(merged) == 1:
+            index += 1
+            continue
+        if fragment["text"].rstrip().endswith(("。", "！", "？", "!", "?")):
+            index += 1
+            continue
+        choices = []
+        if index:
+            previous = merged[index - 1]
+            gap = max(0.0, fragment["start"] - previous["end"])
+            if gap <= 0.6 and fragment["end"] - previous["start"] <= 15:
+                choices.append((gap, 0 if not previous["text"].rstrip().endswith(("。", "？", "!", "?")) else 1, index - 1))
+        if index + 1 < len(merged):
+            following = merged[index + 1]
+            gap = max(0.0, following["start"] - fragment["end"])
+            if gap <= 0.6 and following["end"] - fragment["start"] <= 15:
+                choices.append((gap, 0 if not fragment["text"].rstrip().endswith(("。", "？", "!", "?")) else 1, index + 1))
+        if not choices:
+            index += 1
+            continue
+        neighbor_index = min(choices)[2]
+        if neighbor_index < index:
+            neighbor = merged[neighbor_index]
+            neighbor["text"] = neighbor["text"].rstrip() + fragment["text"].lstrip()
+            neighbor["end"] = max(neighbor["end"], fragment["end"])
+            neighbor["words"].extend(fragment["words"])
+            neighbor["source_segments"] = neighbor.get("source_segments", 1) + fragment.get("source_segments", 1)
+            neighbor["suggestion"] = "短音频片段已合并；请听原声校对文字和句界。"
+            merged.pop(index)
+            index = max(0, index - 1)
+        else:
+            neighbor = merged[neighbor_index]
+            neighbor["text"] = fragment["text"].rstrip() + neighbor["text"].lstrip()
+            neighbor["start"] = min(fragment["start"], neighbor["start"])
+            neighbor["words"] = fragment["words"] + neighbor["words"]
+            neighbor["source_segments"] = neighbor.get("source_segments", 1) + fragment.get("source_segments", 1)
+            neighbor["suggestion"] = "短音频片段已合并；请听原声校对文字和句界。"
+            merged.pop(index)
+    return merged
+
+
 def read_audio(path: Path) -> np.ndarray:
     chunks: list[np.ndarray] = []
     with av.open(str(path)) as container:
@@ -65,7 +112,7 @@ def main(args: list[str] | None = None) -> int:
 
     audio = read_audio(media)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = whisper.load_model("small", device=device, download_root=str(model_root))
+    model = whisper.load_model("medium", device=device, download_root=str(model_root))
     result = model.transcribe(audio, language=None if language == "auto" else language,
                               task="transcribe", word_timestamps=True, fp16=device == "cuda", verbose=False)
     detected_language = result.get("language", language)
@@ -89,8 +136,12 @@ def main(args: list[str] | None = None) -> int:
         segments = merge_english_pauses(segments)
         from subtitle_split import split_segments
         segments, _ = split_segments(segments, "en", use_model=False)
+    elif detected_language == "ja":
+        segments = merge_japanese_fragments(segments)
+        from subtitle_split import split_segments
+        segments, _ = split_segments(segments, "ja")
     output.write_text(json.dumps({
-        "source": media.name, "model": "small", "device": device, "language": detected_language,
+        "source": media.name, "model": "medium", "device": device, "language": detected_language,
         "review_status": "machine_generated_unchecked", "segments": segments,
         "raw_segments": raw_segments,
     }, ensure_ascii=False, indent=2), encoding="utf-8")

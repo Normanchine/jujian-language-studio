@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QKeySequence
+from reading_gesture import normalize_trigger, MODIFIER_NAMES
 
 import keyring
 from keyring.backends.Windows import WinVaultKeyring
@@ -49,6 +50,8 @@ DEFAULTS = {
     "shortcut_next": "Ctrl+Right",
     "shortcut_play": "Space",
     "shortcut_loop": "Ctrl+L",
+    "shortcut_replay": "Ctrl+R",
+    "shortcut_reading_query": "Alt",
     "video_size": "small",
     "show_transcript": False,
     "highlight_delay_ms": 200,
@@ -66,6 +69,8 @@ def read_settings() -> dict:
     result = {**DEFAULTS, **{key: raw[key] for key in DEFAULTS if key in raw}}
     if not isinstance(result["theme"], str) or result["theme"] not in THEMES:
         result["theme"] = DEFAULTS["theme"]
+    try:result["shortcut_reading_query"]=normalize_trigger(result["shortcut_reading_query"])
+    except ValueError:result["shortcut_reading_query"]="Alt"
     return result
 
 
@@ -197,22 +202,36 @@ class SettingsBridge(QObject):
         self.changed.emit()
         return True
 
-    @Slot(str, str, str, str, result=bool)
-    def saveShortcuts(self, previous: str, following: str, play: str, loop: str) -> bool:
+    @Slot(str, str, str, str, str, result=bool)
+    def saveShortcuts(self, previous: str, following: str, play: str, loop: str, replay: str = "Ctrl+R") -> bool:
         sequences = [QKeySequence(value).toString(QKeySequence.PortableText)
-                     for value in (previous, following, play, loop)]
-        if any(not value for value in sequences) or len(set(sequences)) != 4:
+                     for value in (previous, following, play, loop, replay)]
+        if any(not value for value in sequences) or len(set(sequences)) != 5:
             self._status = "快捷键不能为空或重复，请重新录入。"
             self.changed.emit()
             return False
         return self._save_preferences(dict(zip(
-            ("shortcut_previous", "shortcut_next", "shortcut_play", "shortcut_loop"), sequences)))
+            ("shortcut_previous", "shortcut_next", "shortcut_play", "shortcut_loop", "shortcut_replay"), sequences)))
 
     @Slot(str, bool, result=bool)
     def saveListeningLayout(self, size: str, transcript: bool) -> bool:
         if size not in {"small", "medium", "large", "hidden"}:
             return False
         return self._save_preferences({"video_size": size, "show_transcript": transcript})
+
+    @Slot(int,int,result=str)
+    def readingTriggerSequence(self,key,modifiers):
+        for name,code in MODIFIER_NAMES.items():
+            if key==code:return name
+        try:return normalize_trigger(self.keySequence(key,modifiers))
+        except ValueError:return ''
+
+    @Slot(str,result=bool)
+    def saveReadingShortcut(self,value):
+        try:value=normalize_trigger(value)
+        except ValueError as exc:
+            self._status=str(exc);self.changed.emit();return False
+        return self._save_preferences({'shortcut_reading_query':value})
 
     @Slot(str, result=bool)
     def saveKey(self, value: str) -> bool:

@@ -7,7 +7,9 @@ import QtQuick.Effects
 
 ApplicationWindow {
     id: root
-    property string appVersion: "0.1.0"
+    property string appVersion: "0.2.0"
+    property var readingPreviewItems: []
+    property var readingHomeState: reading.homeState
     width: 1180
     height: 820
     minimumWidth: 900
@@ -87,12 +89,35 @@ ApplicationWindow {
     property bool scrubbing: false
     onScrubbingChanged: if (scrubbing) highlightSeekFloor = -1
     property string page: "home"
+    onPageChanged: {
+        if (page !== "reading") readingView.leavePractice()
+    }
     property bool sidebarCollapsed: false
     property int pendingResumeMs: 0
+    property bool playbackReady: false
+    property string playbackUrl: ""
+    function saveCurrentPlayback() {
+        if (playbackReady && study.hasMedia && playbackUrl === study.mediaUrl
+                && player.source.toString() === playbackUrl)
+            study.savePlayback(player.position)
+    }
+    function restorePlayback() {
+        if (!study.hasMedia || player.source.toString() !== playbackUrl) return
+        if (player.mediaStatus !== MediaPlayer.LoadedMedia
+                && player.mediaStatus !== MediaPlayer.BufferedMedia) return
+        if (!playbackReady) {
+            player.position = pendingResumeMs
+            pendingResumeMs = 0
+            playbackReady = true
+            study.updatePlayback(player.position)
+        }
+    }
     property bool maximized: visibility === Window.Maximized
     onClosing: {
-        if (study.hasMedia) study.savePlayback(player.position)
+        root.saveCurrentPlayback()
         writingView.saveNow()
+        writer.pauseTask()
+        readingView.leavePractice()
     }
     property var rates: [0.75, 1.0, 1.25, 1.5]
     property int rateIndex: 1
@@ -104,6 +129,9 @@ ApplicationWindow {
     function changeRate() {
         rateIndex = (rateIndex + 1) % rates.length
         player.playbackRate = rates[rateIndex]
+    }
+    function replayCurrentSentence() {
+        if (study.sentenceCount > 0) study.chooseSentence(study.activeIndex)
     }
     function editCurrentSentence() {
         originalEdit.text = study.currentSentence.text
@@ -181,7 +209,7 @@ ApplicationWindow {
                 font.weight: nav.selected ? Font.DemiBold : Font.Normal
                 anchors.verticalCenter: parent.verticalCenter }
         }
-        MouseArea { id: navHover; anchors.fill: parent; hoverEnabled: true
+        MouseArea { id: navHover; anchors.fill: parent; hoverEnabled: true; enabled: nav.enabled
             cursorShape: Qt.PointingHandCursor; onClicked: nav.clicked() }
     }
 
@@ -221,24 +249,18 @@ ApplicationWindow {
     MediaPlayer {
         id: player
         objectName: "mediaPlayer"
-        source: study.mediaUrl
         audioOutput: AudioOutput { id: sound; volume: 0.85 }
         videoOutput: videoView
         onMediaStatusChanged: {
-            if (mediaStatus === MediaPlayer.EndOfMedia) study.finishPlayback()
-            if (root.pendingResumeMs > 0 && (mediaStatus === MediaPlayer.LoadedMedia
-                    || mediaStatus === MediaPlayer.BufferedMedia)) {
-                position = root.pendingResumeMs
-                root.pendingResumeMs = 0
-            }
+            if (root.playbackReady && root.playbackUrl === study.mediaUrl
+                    && mediaStatus === MediaPlayer.EndOfMedia) study.finishPlayback()
+            root.restorePlayback()
         }
         onPlaybackStateChanged: {
-            if (playbackState !== MediaPlayer.PlayingState && study.hasMedia
-                    && root.pendingResumeMs === 0
-                    && (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia))
-                study.savePlayback(position)
+            if (playbackState !== MediaPlayer.PlayingState) root.saveCurrentPlayback()
         }
         onPositionChanged: {
+            if (!root.playbackReady) return
             if (root.highlightSeekFloor >= 0
                     && position - root.highlightDelayMs >= root.highlightSeekFloor * 1000)
                 root.highlightSeekFloor = -1
@@ -258,8 +280,17 @@ ApplicationWindow {
     Connections {
         target: study
         function onMediaChanged() {
-            root.highlightSeekFloor = -1
+            // Stop/source replacement can synchronously emit position/state changes.
+            // Disable saving first, and capture the new resume point before either.
+            root.playbackReady = false
             root.pendingResumeMs = study.resumeMs
+            root.playbackUrl = ""
+            root.highlightSeekFloor = -1
+            player.stop()
+            player.source = ""
+            root.playbackUrl = study.mediaUrl
+            player.source = root.playbackUrl
+            root.restorePlayback()
             if (study.hasMedia) root.page = "listen"
             else { player.stop(); root.page = "library" }
         }
@@ -275,14 +306,14 @@ ApplicationWindow {
     }
     Timer { interval: 5000; repeat: true
         running: player.playbackState === MediaPlayer.PlayingState
-        onTriggered: study.savePlayback(player.position) }
+        onTriggered: root.saveCurrentPlayback() }
 
     FileDialog {
         id: mediaPicker
         title: "打开本地音频或视频"
         nameFilters: ["媒体文件 (*.mp3 *.m4a *.m4s *.mp4 *.wav *.flac *.mov *.mkv *.webm)", "所有文件 (*)"]
         onAccepted: {
-            if (study.hasMedia) study.savePlayback(player.position)
+            root.saveCurrentPlayback()
             player.pause()
             study.openMedia(selectedFile.toString())
         }
@@ -320,15 +351,15 @@ ApplicationWindow {
             anchors.left: parent.left; anchors.right: parent.right
             anchors.leftMargin: 8; anchors.rightMargin: 8; y: 89; spacing: 4
             NavButton { width: parent.width; label: "首页"; iconName: "home"; selected: root.page === "home"
-                onClicked: { player.pause(); study.savePlayback(player.position); study.refreshProjects(); root.page = "home" } }
+                onClicked: { player.pause(); root.saveCurrentPlayback(); study.refreshProjects(); root.page = "home" } }
             NavButton { width: parent.width; label: "精听"; iconName: "listen"; selected: root.page === "listen"
                 onClicked: { if (!study.hasMedia) study.refreshProjects(); root.page = study.hasMedia ? "listen" : "library" } }
             NavButton { width: parent.width; label: "写作"; iconName: "writing"; selected: root.page === "writing"
                 onClicked: { writingView.showLibrary(); root.page = "writing" } }
+            NavButton { width: parent.width; label: "阅读"; iconName: "reading"; selected: root.page === "reading"
+                onClicked: { player.pause(); readingView.showHome(); root.page = "reading" } }
             NavButton { width: parent.width; label: "资料库"; iconName: "library"; selected: root.page === "library"
                 onClicked: { study.refreshProjects(); root.page = "library" } }
-            NavButton { width: parent.width; label: "笔记"; iconName: "notes"; selected: root.page === "notes"
-                onClicked: root.page = "notes" }
             NavButton { width: parent.width; label: "设置"; iconName: "settings"; selected: root.page === "settings"
                 onClicked: root.page = "settings" }
         }
@@ -356,7 +387,7 @@ ApplicationWindow {
         RowLayout {
             anchors.fill: parent; anchors.leftMargin: 20; anchors.rightMargin: 132; spacing: 7
             Text { Layout.fillWidth: true; Layout.minimumWidth: 70
-                text: root.page === "listen" ? study.title : ({home:"首页", writing:"写作", library:"资料库", notes:"笔记", settings:"设置"}[root.page] || "首页")
+                text: root.page === "listen" ? study.title : ({home:"首页", writing:"写作", reading:"阅读", library:"资料库", settings:"设置"}[root.page] || "首页")
                 elide: Text.ElideMiddle; color: "#27362D"
                 font.family: "Microsoft YaHei UI"; font.pixelSize: 15; font.weight: Font.DemiBold
                 MouseArea {
@@ -404,14 +435,14 @@ ApplicationWindow {
             ActionButton { visible: study.enriching && root.page === "listen"; label: "停止处理"
                 onClicked: study.stopEnrichment() }
             ActionButton { visible: root.page === "listen" && root.width >= 1160; label: study.splitting ? "整理中…" : "整理字幕"
-                enabled: study.contentLanguage === "en" && study.sentenceCount > 0 && !study.busy && !study.enriching
+                enabled: (study.contentLanguage === "en" || study.contentLanguage === "ja") && study.sentenceCount > 0 && !study.busy && !study.enriching
                 onClicked: study.organizeSubtitles() }
             ActionButton { visible: root.page === "listen"; label: "打开文件"
                 enabled: !study.busy && !study.enriching
                 onClicked: mediaPicker.open() }
         }
         Menu { id: moreMenu; x: toolbar.width - width - 18; y: toolbar.height - 2
-            MenuItem { text: "整理英语字幕"; enabled: study.contentLanguage === "en" && study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.organizeSubtitles() }
+            MenuItem { text: "整理字幕"; enabled: (study.contentLanguage === "en" || study.contentLanguage === "ja") && study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.organizeSubtitles() }
             MenuItem { text: "导入字幕"; enabled: study.hasMedia && !study.busy && !study.enriching; onTriggered: transcriptPicker.open() }
             MenuItem { text: "中文翻译"; enabled: study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.startTranslation(true) }
             MenuItem { text: study.contentLanguage === "en" ? "句子解释" : "语法解析"
@@ -474,9 +505,10 @@ ApplicationWindow {
         height: 27; color: "transparent"
         Text {
             x: 16; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 48
-            text: player.errorString && root.page === "listen" ? "播放错误：" + player.errorString
+            text: root.page === "reading" ? ""
+                  : player.errorString && root.page === "listen" ? "播放错误：" + player.errorString
                   : root.page === "listen" && study.currentSentence.suggestion ? study.currentSentence.suggestion
-                  : root.page === "writing" || root.page === "notes" ? writer.status
+                  : root.page === "writing" ? writer.status
                   : root.page === "settings" ? settings.status
                   : root.page === "home" && downloads.status ? downloads.status : study.status
             elide: Text.ElideRight
@@ -497,18 +529,21 @@ ApplicationWindow {
             themeAccent: root.accentColor
             onOpenLocal: mediaPicker.open()
             onNewDraft: { writer.newDraft("ja"); writingView.libraryMode = false; root.page = "writing" }
-            onOpenProject: { study.savePlayback(player.position); study.openProject(path) }
+            onOpenProject: { root.saveCurrentPlayback(); study.openProject(path) }
             onOpenDraft: { writer.openDraft(path); writingView.libraryMode = false; root.page = "writing" }
             onOpenLibrary: { study.refreshProjects(); root.page = "library" }
             onOpenWriting: { writer.refresh(); writingView.showLibrary(); root.page = "writing" }
         }
         LibraryView { anchors.fill: parent; visible: root.page === "library"
             themeAccent: root.accentColor
-            onOpenProject: { study.savePlayback(player.position); study.openProject(path) } }
+            onOpenProject: { root.saveCurrentPlayback(); study.openProject(path) } }
         WritingView { id: writingView; anchors.fill: parent; visible: root.page === "writing"
-            themeAccent: root.accentColor
-            onOpenNotes: { writer.refresh(); root.page = "notes" } }
-        NotesView { anchors.fill: parent; visible: root.page === "notes" }
+            themeAccent: root.accentColor }
+        ReadingHome { id: readingView; anchors.fill: parent; visible: root.page === "reading"
+            materials: root.readingPreviewItems.length ? root.readingPreviewItems.filter(function(a) {
+                return a.sourceKind !== "personal_import" && a.sourceKind !== "user_paste";
+            }).concat(reading.importedCatalogue) : reading.catalogue; savedState: root.readingHomeState
+            onStateEdited: function(state) { root.readingHomeState = state; reading.saveHomeState(state) } }
         SettingsView { anchors.fill: parent; visible: root.page === "settings"
             appVersion: root.appVersion }
 
@@ -610,12 +645,14 @@ ApplicationWindow {
                 Row {
                     x: 16; y: 42; spacing: 8
                     ActionButton { label: "上一句"; height: 28; implicitHeight: 28
-                        enabled: study.activeIndex > 0; onClicked: study.chooseSentence(study.activeIndex - 1) }
+                        enabled: study.activeIndex > 0; onClicked: study.navigateSentence(-1) }
                     ActionButton { label: player.playbackState === MediaPlayer.PlayingState ? "暂停" : "播放"
                         height: 28; implicitHeight: 28; primary: true
                         onClicked: player.playbackState === MediaPlayer.PlayingState ? player.pause() : player.play() }
                     ActionButton { label: "下一句"; height: 28; implicitHeight: 28
-                        enabled: study.activeIndex + 1 < study.sentenceCount; onClicked: study.chooseSentence(study.activeIndex + 1) }
+                        enabled: study.activeIndex + 1 < study.sentenceCount; onClicked: study.navigateSentence(1) }
+                    ActionButton { label: "重播本句"; height: 28; implicitHeight: 28
+                        enabled: study.sentenceCount > 0; onClicked: root.replayCurrentSentence() }
                     ActionButton { label: "循环本句"; height: 28; implicitHeight: 28; selected: study.loopSentence; onClicked: study.toggleLoop() }
                     ActionButton { visible: transport.width >= 790; label: root.textHidden ? "显示原文" : "隐藏原文"; height: 28; implicitHeight: 28; onClicked: root.textHidden = !root.textHidden }
                     ActionButton { label: root.rates[root.rateIndex] + "×"; height: 28; implicitHeight: 28; onClicked: root.changeRate() }
@@ -680,10 +717,11 @@ ApplicationWindow {
                     clip: true; model: study.segments
                     property int trackedIndex: -1
                     property bool followPlayback: true
-                    onMovementStarted: followPlayback = false
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; width: 8; onPressedChanged: if (pressed) readingList.followPlayback = false }
+                    onMovementStarted: { followScroll.stop(); followPlayback = false }
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; width: 8; onPressedChanged: if (pressed) { followScroll.stop(); readingList.followPlayback = false } }
                     boundsBehavior: Flickable.StopAtBounds
                     spacing: 6
+                    NumberAnimation { id: followScroll; target: readingList; property: "contentY"; duration: 260; easing.type: Easing.OutCubic }
                     onCountChanged: if (followPlayback) Qt.callLater(scrollToActive)
                     Connections {
                         target: study
@@ -695,13 +733,21 @@ ApplicationWindow {
                         function onMediaChanged() { readingList.returnToCurrent() }
                     }
                     function returnToCurrent() { followPlayback = true; Qt.callLater(scrollToActive) }
-                    MouseArea { anchors.fill: parent; acceptedButtons: Qt.NoButton; onWheel: function(wheel) { readingList.followPlayback = false; wheel.accepted = false } }
+                    MouseArea { anchors.fill: parent; acceptedButtons: Qt.NoButton; onWheel: function(wheel) { followScroll.stop(); readingList.followPlayback = false; wheel.accepted = false } }
                     function scrollToActive() {
-                        if (count === 0 || study.activeIndex < 0) { trackedIndex = -1; return }
+                        if (!followPlayback || count === 0 || study.activeIndex < 0) { trackedIndex = -1; return }
                         trackedIndex = root.highlightedSentenceIndex
+                        followScroll.stop()
+                        var previousY = contentY
                         forceLayout()
-                        var card = itemAtIndex(trackedIndex)
-                        if (!card || card.y < contentY + 4 || card.y + card.height > contentY + height - 4) positionViewAtIndex(trackedIndex, ListView.Beginning)
+                        positionViewAtIndex(trackedIndex, ListView.Center)
+                        var centeredY = contentY
+                        if (Math.abs(centeredY - previousY) > 1) {
+                            contentY = previousY
+                            followScroll.from = previousY
+                            followScroll.to = centeredY
+                            followScroll.start()
+                        }
                     }
                     delegate: Rectangle {
                         id: readingCard
@@ -935,7 +981,8 @@ ApplicationWindow {
     }
 
     Shortcut { sequence: settings.values.shortcut_play; enabled: root.listeningKeysEnabled; onActivated: player.playbackState === MediaPlayer.PlayingState ? player.pause() : player.play() }
-    Shortcut { sequence: settings.values.shortcut_previous; enabled: root.listeningKeysEnabled && study.activeIndex > 0; onActivated: study.chooseSentence(study.activeIndex - 1) }
-    Shortcut { sequence: settings.values.shortcut_next; enabled: root.listeningKeysEnabled && study.activeIndex + 1 < study.sentenceCount; onActivated: study.chooseSentence(study.activeIndex + 1) }
+    Shortcut { sequence: settings.values.shortcut_previous; enabled: root.listeningKeysEnabled && study.activeIndex > 0; onActivated: study.navigateSentence(-1) }
+    Shortcut { sequence: settings.values.shortcut_next; enabled: root.listeningKeysEnabled && study.activeIndex + 1 < study.sentenceCount; onActivated: study.navigateSentence(1) }
     Shortcut { sequence: settings.values.shortcut_loop; enabled: root.listeningKeysEnabled && study.sentenceCount > 0; onActivated: study.toggleLoop() }
+    Shortcut { sequence: settings.values.shortcut_replay; enabled: root.listeningKeysEnabled && study.sentenceCount > 0; onActivated: root.replayCurrentSentence() }
 }

@@ -1,0 +1,28 @@
+[
+  {
+    "id": "demo-writing-email",
+    "set_id": "demo-writing-01",
+    "set_title": "演示 · 9 月 2 日 · 第 1 套",
+    "title": "邮件 · 博物馆参观安排",
+    "kind": "toefl_email",
+    "version": "1",
+    "review_status": "demo",
+    "source": "自编交互演示材料，非真题；时限仅用于功能演示。",
+    "limit_seconds": 420,
+    "prompt": "Write an Email\n\nYour university club is planning a visit to a local museum. You are helping organize the visit. Write an email to the museum coordinator, Ms. Taylor.\n\nIn your email, do the following:\n• Explain the purpose of your group's visit.\n• Ask about available dates and group discounts.\n• Describe one activity your group would like to take part in.\n\nWrite as much as you can and in complete sentences.",
+    "set_date": "2026-09-02"
+  },
+  {
+    "id": "demo-writing-discussion",
+    "set_id": "demo-writing-01",
+    "set_title": "演示 · 9 月 2 日 · 第 1 套",
+    "title": "学术讨论 · 校园公共空间",
+    "kind": "toefl_discussion",
+    "version": "1",
+    "review_status": "demo",
+    "source": "自编交互演示材料，非真题；时限仅用于功能演示。",
+    "limit_seconds": 600,
+    "prompt": "Write for an Academic Discussion\n\nProfessor Morgan\nOur university has funding to improve one shared space on campus. Some students want a quiet study area, while others prefer a space for group activities. Which should the university prioritize, and why? Support your opinion with reasons or examples.\n\nAlex\nI would choose a quiet study area. Students often have trouble finding somewhere to concentrate, especially during exams. A comfortable room with individual desks would benefit many students.\n\nJamie\nI prefer a group activity space. University life should help students build relationships and work together. A flexible room could host club meetings, project discussions, and social events.\n\nYour response\nContribute your own perspective to the discussion. Explain and support your opinion, and connect it to the ideas above where useful.",
+    "set_date": "2026-09-02"
+  }
+]

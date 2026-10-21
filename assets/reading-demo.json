@@ -1,0 +1,230 @@
+{
+  "papers": [
+    {
+      "schema_version": 1,
+      "id": "demo-0",
+      "title": "How urban trees keep cities cool",
+      "language": "en",
+      "group": "自编预览材料",
+      "setId": "demo",
+      "setTitle": "阅读演示第 1 套",
+      "number": 1,
+      "order": 0,
+      "body": "Urban trees provide shade, but their influence on temperature extends beyond the area beneath their branches. Water moves from the soil through a tree and eventually evaporates from its leaves. This process uses energy and can cool the surrounding air.\n\nThe effect varies between neighborhoods. A street with mature trees may remain cooler than a nearby street covered in asphalt. However, planting trees alone does not guarantee success. Young trees require suitable soil, space for roots, and a reliable supply of water.\n\nResearchers therefore suggest that cities consider both the number of trees and the conditions in which they grow. A smaller number of healthy trees can provide more lasting benefits than a larger planting program without continued care.",
+      "source": {
+        "kind": "self_authored_demo",
+        "label": "自编演示题 · 非真题 · 单选"
+      },
+      "questions": [
+        {
+          "id": "demo-0-q1",
+          "type": "single",
+          "stem": "What is the main purpose of the passage?",
+          "options": [
+            "To compare the prices of different trees",
+            "To explain how trees cool cities and why care matters",
+            "To argue that cities should replace every road",
+            "To describe the history of urban parks"
+          ],
+          "answer": "B",
+          "explanation": "全文介绍树木降温的机制，并说明种植条件和持续养护决定长期效果。",
+          "evidence": [
+            {
+              "paragraph": 3,
+              "quote": "consider both the number of trees and the conditions in which they grow"
+            }
+          ]
+        },
+        {
+          "id": "demo-0-q2",
+          "type": "single",
+          "stem": "How does evaporation from leaves help cool the air?",
+          "options": [
+            "It increases the amount of asphalt",
+            "It stops water from reaching the soil",
+            "It uses energy as water evaporates",
+            "It prevents leaves from producing shade"
+          ],
+          "answer": "C",
+          "explanation": "第一段明确说水分蒸发会消耗能量，从而有助于降低周围空气温度。",
+          "evidence": [
+            {
+              "paragraph": 1,
+              "quote": "This process uses energy and can cool the surrounding air."
+            }
+          ]
+        },
+        {
+          "id": "demo-0-q3",
+          "type": "single",
+          "stem": "What do young trees need, according to paragraph 2?",
+          "options": [
+            "Suitable soil, root space, and water",
+            "Only shade from mature trees",
+            "More asphalt around their roots",
+            "A location far from every street"
+          ],
+          "answer": "A",
+          "explanation": "第二段列出适宜土壤、根部空间和可靠供水三项条件。",
+          "evidence": [
+            {
+              "paragraph": 2,
+              "quote": "Young trees require suitable soil, space for roots, and a reliable supply of water."
+            }
+          ]
+        },
+        {
+          "id": "demo-0-q4",
+          "type": "single",
+          "stem": "Which street is described as potentially cooler?",
+          "options": [
+            "A street covered entirely in asphalt",
+            "A street with no space for roots",
+            "A street with newly painted buildings",
+            "A street with mature trees"
+          ],
+          "answer": "D",
+          "explanation": "第二段把成熟树木覆盖的街道与附近沥青路面街道对比，前者可能更凉爽。",
+          "evidence": [
+            {
+              "paragraph": 2,
+              "quote": "A street with mature trees may remain cooler than a nearby street covered in asphalt."
+            }
+          ]
+        },
+        {
+          "id": "demo-0-q5",
+          "type": "single",
+          "stem": "What can be inferred about a large planting program?",
+          "options": [
+            "It always works better than a small one",
+            "Its lasting benefits depend partly on continued care",
+            "It makes water unnecessary for young trees",
+            "It should only count the number of leaves"
+          ],
+          "answer": "B",
+          "explanation": "末句将健康树木与缺少持续养护的大规模种植项目对照，可推知项目规模本身不足以保证长久收益。",
+          "evidence": [
+            {
+              "paragraph": 3,
+              "quote": "A smaller number of healthy trees can provide more lasting benefits than a larger planting program without continued care."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "id": "demo-1",
+      "title": "Libraries as shared community spaces",
+      "language": "en",
+      "group": "自编预览材料",
+      "setId": "demo",
+      "setTitle": "阅读演示第 1 套",
+      "number": 2,
+      "order": 1,
+      "body": "Public libraries have gradually expanded their role beyond lending books. Many now offer quiet work areas, community meetings, and access to digital resources. These services allow people with different needs to share the same building.\n\nThis change can create practical challenges. A conversation group may need an open room, while a student preparing for an examination may prefer silence. Some libraries address this problem by separating quiet floors from areas intended for discussion.\n\nThe design of a library is therefore a question of balancing activities. Flexible rooms and clear boundaries can support a wider range of visitors without removing the conditions that make focused reading possible.",
+      "source": {
+        "kind": "self_authored_demo",
+        "label": "自编演示题 · 非真题 · 单选"
+      },
+      "questions": [
+        {
+          "id": "demo-1-q1",
+          "type": "single",
+          "stem": "What is the passage mainly about?",
+          "options": [
+            "Why libraries should stop lending books",
+            "How digital resources replace all printed books",
+            "How libraries balance different uses of shared space",
+            "Why students prefer studying outside"
+          ],
+          "answer": "C",
+          "explanation": "文章先介绍图书馆用途增加，再说明如何协调交流与安静阅读等不同需求。",
+          "evidence": [
+            {
+              "paragraph": 3,
+              "quote": "The design of a library is therefore a question of balancing activities."
+            }
+          ]
+        },
+        {
+          "id": "demo-1-q2",
+          "type": "single",
+          "stem": "How have public libraries expanded their role?",
+          "options": [
+            "By providing work areas, meetings, and digital resources",
+            "By removing all reading areas",
+            "By serving only examination candidates",
+            "By moving every service online"
+          ],
+          "answer": "A",
+          "explanation": "第一段列出的新增服务包括安静工作区、社区会议和数字资源。",
+          "evidence": [
+            {
+              "paragraph": 1,
+              "quote": "Many now offer quiet work areas, community meetings, and access to digital resources."
+            }
+          ]
+        },
+        {
+          "id": "demo-1-q3",
+          "type": "single",
+          "stem": "What practical challenge does paragraph 2 describe?",
+          "options": [
+            "Books must be moved to open rooms every day",
+            "Libraries cannot offer any group activities",
+            "Digital resources require visitors to remain silent",
+            "Different visitors may need discussion space or silence"
+          ],
+          "answer": "D",
+          "explanation": "对话小组需要交流空间，备考学生需要安静，这些需求可能冲突。",
+          "evidence": [
+            {
+              "paragraph": 2,
+              "quote": "A conversation group may need an open room, while a student preparing for an examination may prefer silence."
+            }
+          ]
+        },
+        {
+          "id": "demo-1-q4",
+          "type": "single",
+          "stem": "How do some libraries address this challenge?",
+          "options": [
+            "They remove all meeting rooms",
+            "They separate quiet floors from discussion areas",
+            "They allow conversation only outdoors",
+            "They require every visitor to join a group"
+          ],
+          "answer": "B",
+          "explanation": "第二段直接说明把安静楼层与讨论区分开。",
+          "evidence": [
+            {
+              "paragraph": 2,
+              "quote": "Some libraries address this problem by separating quiet floors from areas intended for discussion."
+            }
+          ]
+        },
+        {
+          "id": "demo-1-q5",
+          "type": "single",
+          "stem": "Why are flexible rooms and clear boundaries useful?",
+          "options": [
+            "They guarantee that every visitor reads the same books",
+            "They make focused reading unnecessary",
+            "They support different activities while preserving quiet study",
+            "They eliminate the need for public libraries"
+          ],
+          "answer": "C",
+          "explanation": "最后一句说明灵活房间和清晰边界可以兼顾多类使用者及专注阅读条件。",
+          "evidence": [
+            {
+              "paragraph": 3,
+              "quote": "Flexible rooms and clear boundaries can support a wider range of visitors without removing the conditions that make focused reading possible."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

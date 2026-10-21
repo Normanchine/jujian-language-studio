@@ -61,6 +61,13 @@ def display_tokens(text: str, audio_words: list[dict], language: str = "ja") -> 
         cursor += len("".join(surface.split()))
         kana = getattr(word.feature, "kana", "") or ""
         reading = _hiragana(kana) if _HAN.search(surface) and kana not in {"*", ""} else ""
+        # The dictionary's default for 方 is ほう. In 学生の方は it refers to
+        # people and is read かた; keep comparative uses of 方 untouched.
+        if (surface == "方" and index >= 2 and index + 1 < len(parsed)
+                and parsed[index - 2].surface == "学生"
+                and parsed[index - 1].surface == "の"
+                and parsed[index + 1].surface == "は"):
+            reading = "かた"
         if surface == "私":
             reading = "わたし"
         elif surface == "日本" and index + 1 < len(parsed) and parsed[index + 1].surface == "語":

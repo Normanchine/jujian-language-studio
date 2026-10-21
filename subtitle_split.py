@@ -114,8 +114,55 @@ def eligible(segment):
             and compact("".join(w.get("text", "") for w in words)) == compact(segment.get("text", "")))
 
 
+def split_japanese_segments(segments, cancelled=None):
+    """Use existing word times, sentence endings and pauses; never invent word times."""
+    output = []
+    audit = {"changed": False, "protected": 0, "model_groups": 0, "fallback_groups": 0,
+             "original_count": len(segments)}
+    ending = re.compile(r"(?:ですか|ますか|ませんか|でしょうか|でした|ました|ません|です|ます|ですね|ですよ|だね|だよ|そうか)[。！？!?」』]*$")
+    for segment in segments:
+        if cancelled and cancelled():
+            raise InterruptedError("整理已取消，原字幕保持不变")
+        if not eligible(segment):
+            output.append(copy.deepcopy(segment)); audit["protected"] += 1
+            continue
+        words = segment["words"]
+        if any(a["end"] > b["start"] or a["end"] < a["start"] for a, b in zip(words, words[1:])):
+            output.append(copy.deepcopy(segment)); audit["protected"] += 1
+            continue
+        ends, begin = [], 0
+        for i in range(1, len(words)):
+            text = "".join(w["text"] for w in words[begin:i]).strip()
+            following = words[i]["text"]
+            gap = words[i]["start"] - words[i-1]["end"]
+            duration = words[i-1]["end"] - words[begin]["start"]
+            remaining = words[-1]["end"] - words[i]["start"]
+            punctuation = bool(re.search(r"[。！？!?][」』]*$", text))
+            # Do not separate a question/final particle from its predicate.
+            terminal = bool(ending.search(text)) and not re.match(r"^[かねよなぞ][。！？!?、\s]*$", following.strip())
+            boundary = punctuation or (terminal and (gap >= .2 or following[:1].isspace()))
+            long_clause = duration >= 7 and gap >= .45 and bool(re.search(r"[、,]|(?:けど|から|ので|が|て)$", text))
+            if duration >= 1.2 and remaining >= 1.2 and len(compact(text)) >= 4 and (boundary or long_clause):
+                ends.append(i); begin = i
+        if not ends:
+            output.append(copy.deepcopy(segment)); continue
+        begin = 0
+        for end in [*ends, len(words)]:
+            selected = copy.deepcopy(words[begin:end])
+            unit = {"start": selected[0]["start"], "end": selected[-1]["end"],
+                    "text": "".join(w["text"] for w in selected).strip(), "words": selected,
+                    "translation": "", "analysis": {}, "reviewed": False,
+                    "split_method": "ja-source-word-timestamps-v1"}
+            output.append(unit); begin = end
+        audit["changed"] = True
+    audit["unit_count"] = len(output)
+    return output, audit
+
+
 def split_segments(segments, language="en", use_model=False, translate_new=False, progress=None, cancelled=None):
     """Return new segments and audit. Protected/un-aligned segments remain exact copies."""
+    if language == "ja":
+        return split_japanese_segments(segments, cancelled)
     if language != "en":
         return copy.deepcopy(segments), {"changed": False, "protected": len(segments), "model_groups": 0, "fallback_groups": 0}
     output, group = [], []

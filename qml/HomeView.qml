@@ -62,7 +62,7 @@ Item {
                         width: parent.width; height: 39; spacing: 9
                         TextField {
                             id: linkField; Layout.fillWidth: true; Layout.preferredHeight: 39
-                            placeholderText: "粘贴 B 站视频链接"
+                            placeholderText: "粘贴 B 站或小宇宙单集链接"
                             font.family: "Microsoft YaHei UI"; font.pixelSize: 13
                             background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: linkField.activeFocus ? home.themeAccent : "#DDE2DF" }
                             onTextEdited: downloads.clearPreview()

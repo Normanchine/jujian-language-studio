@@ -48,6 +48,7 @@ def main() -> int:
     from download_service import DownloadBridge
     from model_settings import SettingsBridge
     from writing import WritingBridge
+    from reading import ReadingBridge
 
     milestones = {"imports_seconds": round(perf_counter() - STARTED, 3)}
     app = QApplication(sys.argv)
@@ -58,12 +59,16 @@ def main() -> int:
     downloads = DownloadBridge()
     settings = SettingsBridge()
     writer = WritingBridge()
+    reading = ReadingBridge()
+    app.aboutToQuit.connect(reading.leave)
     app.aboutToQuit.connect(bridge.close)
+    app.aboutToQuit.connect(writer.pauseTask)
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("study", bridge)
     engine.rootContext().setContextProperty("downloads", downloads)
     engine.rootContext().setContextProperty("settings", settings)
     engine.rootContext().setContextProperty("writer", writer)
+    engine.rootContext().setContextProperty("reading", reading)
     engine.rootContext().setContextProperty("uiAnimationsEnabled", windows_animations_enabled())
     engine.load(QUrl.fromLocalFile(str(ASSETS / "qml" / "Main.qml")))
     if not engine.rootObjects():

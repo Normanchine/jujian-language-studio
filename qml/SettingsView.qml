@@ -9,6 +9,9 @@ Item {
     component ShortcutField: TextField {
         id: keyField
         property string sequence: ""
+        property bool allowModifier: false
+        property string modifierCandidate: ""
+        onActiveFocusChanged: if (activeFocus) modifierCandidate=""
         implicitWidth: 165; implicitHeight: 36
         readOnly: true; text: activeFocus ? "请按快捷键…" : sequence
         selectByMouse: false
@@ -17,8 +20,15 @@ Item {
         Keys.onPressed: function(event) {
             event.accepted = true
             if (event.key === Qt.Key_Escape) { focus = false; return }
-            var value = settings.keySequence(event.key, event.modifiers)
+            var modifier=event.key===Qt.Key_Alt || event.key===Qt.Key_Control || event.key===Qt.Key_Shift || event.key===Qt.Key_Meta;
+            if (allowModifier && modifier) {modifierCandidate=settings.readingTriggerSequence(event.key,event.modifiers);return;}
+            var value = allowModifier ? settings.readingTriggerSequence(event.key,event.modifiers) : settings.keySequence(event.key, event.modifiers)
             if (value.length) { sequence = value; focus = false }
+        }
+        Keys.onReleased: function(event) {
+            if (allowModifier && activeFocus && modifierCandidate.length && settings.readingTriggerSequence(event.key,event.modifiers)===modifierCandidate) {
+                sequence=modifierCandidate;modifierCandidate="";focus=false;event.accepted=true;
+            }
         }
     }
     FolderDialog { id: folderPicker; title: "选择下载目录"
@@ -83,18 +93,29 @@ Item {
                     ShortcutField { id: playKey; sequence: settings.values.shortcut_play }
                     Text { text: "循环本句"; color: "#4B5A50" }
                     ShortcutField { id: loopKey; sequence: settings.values.shortcut_loop }
+                    Text { text: "重播当前句"; color: "#4B5A50" }
+                    ShortcutField { id: replayKey; sequence: settings.values.shortcut_replay }
                 }
                 Row { spacing: 10
                     AppButton { text: "保存快捷键"
-                        onClicked: settings.saveShortcuts(previousKey.sequence, nextKey.sequence, playKey.sequence, loopKey.sequence) }
+                        onClicked: settings.saveShortcuts(previousKey.sequence, nextKey.sequence, playKey.sequence, loopKey.sequence, replayKey.sequence) }
                     AppButton { text: "恢复默认快捷键"
                         onClicked: {
                             previousKey.sequence = "Ctrl+Left"; nextKey.sequence = "Ctrl+Right"
-                            playKey.sequence = "Space"; loopKey.sequence = "Ctrl+L"
-                            settings.saveShortcuts("Ctrl+Left", "Ctrl+Right", "Space", "Ctrl+L")
+                            playKey.sequence = "Space"; loopKey.sequence = "Ctrl+L"; replayKey.sequence = "Ctrl+R"
+                            settings.saveShortcuts("Ctrl+Left", "Ctrl+Right", "Space", "Ctrl+L", "Ctrl+R")
                         } }
                 }
                 Text { text: settings.status; color: "#748178"; font.pixelSize: 12; width: parent.width; wrapMode: Text.Wrap }
+                Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
+                Text { text: "精读快捷键"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D" }
+                Text { text: "按住快捷键拖选词句，松开鼠标查询。普通划选用于复制。";width: parent.width;wrapMode: Text.Wrap;color: "#78857A";font.pixelSize: 12 }
+                RowLayout { width: parent.width;spacing: 12
+                    Text { text: "划选查询";color: "#4B5A50" }
+                    ShortcutField { id: readingQueryKey;objectName: "readingQueryShortcut";allowModifier: true;sequence: settings.values.shortcut_reading_query }
+                    AppButton { objectName: "saveReadingQueryShortcut";text: "保存";onClicked: settings.saveReadingShortcut(readingQueryKey.sequence) }
+                    AppButton { text: "恢复 Alt";flat: true;onClicked: {readingQueryKey.sequence="Alt";settings.saveReadingShortcut("Alt");} }
+                }
                 Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
                 Text { text: "下载"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D" }
                 RowLayout { width: parent.width; height: 38

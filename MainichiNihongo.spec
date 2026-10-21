@@ -6,13 +6,12 @@ import imageio_ffmpeg
 
 pyside_root = Path(PySide6.__file__).resolve().parent
 model_sources = [
-    Path('models/small.pt'),
-    Path('dist/每日日语/_internal/models/small.pt'),
-    Path('dist/句间/_internal/models/small.pt'),
+    Path('models/medium.pt'),
+    Path('dist/句间/_internal/models/medium.pt'),
 ]
 model_source = next((path for path in model_sources if path.is_file()), None)
 if model_source is None:
-    raise FileNotFoundError('Download Whisper small.pt into models/ before packaging; see README.md')
+    raise FileNotFoundError('Download Whisper medium.pt into models/ before packaging; see README.md')
 ffmpeg_binaries = [(str(pyside_root / 'plugins' / 'multimedia' / 'ffmpegmediaplugin.dll'), 'PySide6/plugins/multimedia')]
 ffmpeg_binaries += [(str(path), 'PySide6') for path in pyside_root.glob('*.dll') if path.name.startswith(('avcodec-', 'avformat-', 'avutil-', 'swresample-', 'swscale-'))]
 ffmpeg_binaries.append((imageio_ffmpeg.get_ffmpeg_exe(), 'imageio_ffmpeg/binaries'))
@@ -22,7 +21,7 @@ a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[*ffmpeg_binaries, *collect_dynamic_libs('fugashi')],
-    datas=[('qml', 'qml'), ('assets/jujian.png', 'assets'), ('assets/doraemon-reading.png', 'assets'), (str(model_source), 'models'), *collect_data_files('whisper'), *collect_data_files('unidic_lite')],
+    datas=[('qml', 'qml'), ('assets/jujian.png', 'assets'), ('assets/reading-demo.json', 'assets'), ('assets/writing-demo.json', 'assets'), ('assets/doraemon-reading.png', 'assets'), (str(model_source), 'models'), *collect_data_files('whisper'), *collect_data_files('unidic_lite')],
     hiddenimports=['PySide6.QtMultimedia', 'PySide6.QtQuick', 'keyring.backends.Windows',
                    'fugashi', 'unidic_lite'],
     hookspath=[],

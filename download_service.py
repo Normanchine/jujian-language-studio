@@ -1,8 +1,10 @@
-"""Inspect and download a single Bilibili video without blocking Qt's UI thread."""
+"""Inspect and download single Bilibili videos and public Xiaoyuzhou episodes."""
 
 from __future__ import annotations
 
 import re
+import json
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -14,9 +16,67 @@ from model_settings import read_settings
 
 def allowed_url(value: str) -> bool:
     url = urlparse(value.strip())
-    return url.scheme == "https" and url.hostname in {
+    return url.scheme == "https" and (url.hostname in {
         "www.bilibili.com", "bilibili.com", "m.bilibili.com", "b23.tv",
-    }
+    } or is_xiaoyuzhou_url(value))
+
+
+def is_xiaoyuzhou_url(value: str) -> bool:
+    url = urlparse(value.strip())
+    return (url.scheme == "https" and url.hostname in {"www.xiaoyuzhoufm.com", "xiaoyuzhoufm.com"}
+            and not url.username and not url.password and url.netloc == url.hostname
+            and bool(re.fullmatch(r"/episode/[a-fA-F0-9]{24}/?", url.path)))
+
+
+class _EpisodePage(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.active = False
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            self.active = dict(attrs).get("id") == "__NEXT_DATA__"
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.active = False
+
+    def handle_data(self, data):
+        if self.active:
+            self.parts.append(data)
+
+
+def parse_xiaoyuzhou_page(page: str) -> dict:
+    parser = _EpisodePage()
+    parser.feed(page)
+    try:
+        episode = json.loads("".join(parser.parts))["props"]["pageProps"]["episode"]
+        media = episode.get("media") or {}
+        source = media.get("source") or {}
+        audio = source.get("url") or (episode.get("enclosure") or {}).get("url")
+        if source.get("mode") not in {None, "PUBLIC"} or not audio or urlparse(audio).scheme != "https":
+            raise ValueError("该单集没有公开音频，仅支持免登录的公开单集。")
+        return {"title": str(episode.get("title") or "小宇宙播客"),
+                "thumbnail": str((episode.get("image") or {}).get("picUrl") or ""),
+                "audio_url": audio,
+                "formats": [{"id": "public-audio", "label": "音频 · 原始音质", "kind": "audio",
+                             "sizeLabel": size_label(media.get("size")), "estimated": False}]}
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("无法读取公开单集信息；请确认链接，网页结构也可能已更新。") from exc
+
+
+def inspect_xiaoyuzhou(url: str) -> dict:
+    if not is_xiaoyuzhou_url(url):
+        raise ValueError("请使用小宇宙公开单集的 /episode/ 链接。")
+    parsed = urlparse(url)
+    canonical = "https://www.xiaoyuzhoufm.com" + parsed.path
+    request = Request(canonical, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(request, timeout=20) as response:
+        page = response.read(4_000_001)
+    if len(page) > 4_000_000:
+        raise ValueError("单集网页过大，无法解析。")
+    return parse_xiaoyuzhou_page(page.decode("utf-8"))
 
 
 def safe_name(value: str) -> str:
@@ -84,9 +144,15 @@ class DownloadJob(QThread):
 
     def run(self) -> None:
         try:
+            episode = inspect_xiaoyuzhou(self.url) if is_xiaoyuzhou_url(self.url) else None
+            if self.cancel_requested:
+                raise RuntimeError("下载已取消")
             common = {"quiet": True, "no_warnings": True, "noplaylist": True,
                       "skip_download": self.mode == "inspect", "socket_timeout": 20}
             if self.mode == "inspect":
+                if episode:
+                    self.inspected.emit(episode)
+                    return
                 import yt_dlp
                 with yt_dlp.YoutubeDL(common) as client:
                     info = client.extract_info(self.url, download=False)
@@ -108,13 +174,15 @@ class DownloadJob(QThread):
             import imageio_ffmpeg
             import yt_dlp
             ffmpeg_exe = Path(imageio_ffmpeg.get_ffmpeg_exe())
-            options = {**common, "skip_download": False, "format": self.option["id"],
+            options = {**common, "skip_download": False, "format": "bestaudio/best" if episode else self.option["id"],
                        "outtmpl": str(folder / f"{title}.%(ext)s"), "overwrites": False,
                        "progress_hooks": [self._progress],
                        "ffmpeg_location": str(ffmpeg_exe),
                        "merge_output_format": "mp4" if self.option["kind"] == "video" else None}
             with yt_dlp.YoutubeDL(options) as client:
-                info = client.extract_info(self.url, download=True)
+                info = client.extract_info(episode["audio_url"] if episode else self.url, download=True)
+            if episode:
+                info.update(title=episode["title"], thumbnail=episode["thumbnail"])
             candidates = [path for path in folder.iterdir() if path.is_file() and path.stem == title
                           and path.suffix.lower() in {".m4a", ".mp3", ".mp4", ".webm", ".mkv"}]
             if not candidates:
@@ -202,12 +270,13 @@ class DownloadBridge(QObject):
         if self.busy:
             return
         if not allowed_url(url):
-            self._status, self._error = "请输入 HTTPS 的 B 站视频链接。", True
+            self._formats, self._title, self._thumbnail = [], "", ""
+            self._status, self._error = "请输入 HTTPS 的 B 站视频或小宇宙公开单集链接。", True
             self.changed.emit()
             return
         self._url, self._mode = url.strip(), "inspect"
         self._formats, self._title, self._thumbnail = [], "", ""
-        self._status, self._error = "正在读取视频信息…", False
+        self._status, self._error = "正在读取音视频信息…", False
         self._launch(DownloadJob(self._url, "inspect"))
 
     @Slot()

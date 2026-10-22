@@ -23,6 +23,8 @@ Item {
     property var favoriteIds: ({})
     property var readingRecords: ({})
     property var selectedArticle: ({})
+    property var managedArticle: ({})
+    property var managedFolder: ({})
     property bool articleOpen: false
     property string articleMode: "intensive"
     property string practiceError: ""
@@ -45,6 +47,11 @@ Item {
     })
     property int favoriteCount: languageItems.filter(function(a) { return home.isFavorite(a) }).length
     property int intensiveOnlyCount: languageItems.filter(function(a){return a.hasQuestions===false}).length
+    property int personalArticleCount: languageItems.filter(function(a){return a.sourceKind==='personal_import' || a.sourceKind==='user_paste'}).length
+    property bool personalScope: collection==='personal' || collection.indexOf('personal-folder-')===0
+    property var personalFolders: reading.importer.folders.filter(function(f) {return f.language===home.language;}).map(function(f) {
+        return Object.assign({},f,{count:home.languageItems.filter(function(a){return a.setId===f.id;}).length});
+    })
     property bool hasReviewedMaterials: languageItems.some(function(a){return a.sourceKind==='toefl_personal_materials'})
     function matchesMaterial(a) {return materialScope==='all' || (materialScope==='practice' ? a.hasQuestions!==false : a.hasQuestions===false);}
     function chooseMaterial(value) {
@@ -137,7 +144,11 @@ Item {
         var result = [], known = {};
         languageItems.forEach(function(a) {
             if (!known[a.group]) { known[a.group] = true; result.push(a.group) }
-        }); return result.sort(function(a,b) {
+        });
+        if (!known['我的文章'] && reading.importer.folders.some(function(f) { return f.language===home.language; })) result.push('我的文章');
+        return result.sort(function(a,b) {
+            if (a==='我的文章') return -1;
+            if (b==='我的文章') return 1;
             if (a.indexOf('托福资料 · ')===0 && b.indexOf('托福资料 · ')===0) {
                 var am=a.match(/(\d+)月/),bm=b.match(/(\d+)月/);
                 return (am ? Number(am[1]) : 99)-(bm ? Number(bm[1]) : 99);
@@ -189,6 +200,10 @@ Item {
                            sourceGroup:a.sourceKind==='toefl_personal_materials' || a.sourceKind==='personal_import' || a.sourceKind==='user_paste', done:done, status:status,
                            manuallyComplete:home.completedSections[a.setId] === true});
             });
+            if (g === '我的文章' && home.materialScope !== 'practice')
+                reading.importer.folders.filter(function(f) { return f.language===home.language; }).forEach(function(f) {
+                    if (!seen[f.id]) sets.push({kind:"set",label:f.name,id:f.id,count:0,articleCount:0,practiceCount:0,intensiveCount:0,sourceGroup:true,done:0,status:"plain",manuallyComplete:false});
+                });
             if (!sets.length) return;
             result.push({kind:"group", label:g, id:g, total:sets.length, manuallyComplete:home.groupManuallyComplete(g)});
             if (!home.collapsed[g]) result = result.concat(sets);
@@ -198,9 +213,11 @@ Item {
         var needle = query.trim().toLowerCase();
         var found = languageItems.filter(function(a) {
             if (home.route === "favorites" && !home.isFavorite(a)) return false;
+            if (home.collection==='personal' && a.sourceKind!=='personal_import' && a.sourceKind!=='user_paste') return false;
+            if (home.collection.indexOf('personal-folder-')===0 && a.setId!==home.collection) return false;
             if (!home.matchesMaterial(a)) return false;
             if (!home.matchesCompletion(a)) return false;
-            if (!needle && home.collection !== "all" && home.collection !== "favorites" && a.setId !== home.collection) return false;
+            if (!needle && home.collection !== "all" && home.collection !== "favorites" && home.collection !== "personal" && home.collection.indexOf('personal-folder-')!==0 && a.setId !== home.collection) return false;
             if (needle && [a.title, a.setTitle, a.group, a.body].join(" ").toLowerCase().indexOf(needle) < 0) return false;
             if (home.filterIndex > 0 && home.filterIndex < 5 && a.hasQuestions === false) return false;
             if (home.filterIndex === 1 && a.practice !== "new") return false;
@@ -213,6 +230,8 @@ Item {
             return true;
         });
         found.sort(function(a,b) {
+            if (home.personalScope && home.sortIndex===0)
+                return (b.visited || b.order)-(a.visited || a.order);
             if (home.sortIndex === 0) {
                 if (a.visited !== b.visited) return b.visited - a.visited;
             }
@@ -223,7 +242,7 @@ Item {
             return a.order - b.order;
         }); return found;
     }
-    property string collectionTitle: query.trim() ? "搜索结果" : collection === "all" ? (materialScope==='practice' ? "可练习文章" : materialScope==='intensive' ? "仅精读正文" : "全部文章") : collection === "favorites" ? "我的收藏" : (languageItems.filter(function(a) { return a.setId === home.collection })[0] || {}).setTitle || "材料库"
+    property string collectionTitle: query.trim() ? "搜索结果" : collection === "all" ? (materialScope==='practice' ? "可练习文章" : materialScope==='intensive' ? "仅精读正文" : "全部文章") : collection === "favorites" ? "我的收藏" : collection==='personal' ? "我的文章" : (personalFolders.find(function(f){return f.id===home.collection;}) || {}).name || (languageItems.filter(function(a) { return a.setId === home.collection })[0] || {}).setTitle || "材料库"
     function snapshot() {
         var index = articles.indexAt(1, articles.contentY + 1);
         var item = index >= 0 ? articles.itemAtIndex(index) : null;
@@ -239,7 +258,9 @@ Item {
         stateEdited(Object.assign({version:6, language:language, byLanguage:memory, destinations:destinationMemory, favorites:favoriteIds, records:readingRecords, completedSections:completedSections}, snapshot()));
     }
     function choose(id) {
-        collection = id; query = ""; filterIndex = 0; sortIndex = id === "learning" ? 0 : 1; articles.positionViewAtBeginning(); persist(); directoryDrawer.close();
+        collection = id; query = ""; filterIndex = 0; completionScope = 'all'; materialScope = 'all';
+        sortIndex = id === "personal" || id === "learning" ? 0 : 1;
+        articles.positionViewAtBeginning(); persist(); directoryDrawer.close();
     }
     function changeLanguage(value) {
         if (language === value) return;
@@ -308,13 +329,14 @@ Item {
         RowLayout {
             Layout.fillWidth: true; spacing: 8
             AppButton { objectName: "readingImportArticle"; text: "＋ 导入文章"; visible: home.route === "library"; onClicked: importDialog.open() }
+            AppButton { objectName: "readingCreateFolder"; text: "＋ 新建文件夹"; visible: home.route === "library"; onClicked: { folderName.text=""; createFolderPopup.open(); } }
             Text { visible: home.materials.length > 0 && !home.compact; text: home.materials.some(function(a){return a.mock}) ? "设计预览 · 含模拟目录" : home.materials.some(function(a){return a.sourceKind==='toefl_personal_materials'}) ? "已核单选 · 精读正文" : "自编演示材料"; color: home.muted; font.pixelSize: 11 }
             Item { Layout.fillWidth: true; visible: !home.compact }
             TextField {
                 id: search; objectName: "readingSearch"; Layout.fillWidth: home.compact
                 Layout.preferredWidth: home.compact ? 200 : Math.min(390, home.width * 0.46)
                 implicitHeight: 36; text: home.query; selectByMouse: true
-                placeholderText: "搜索标题、来源或原文"; color: home.ink; font.pixelSize: 12
+                placeholderText: home.personalScope ? "搜索我的文章或文件夹" : "搜索标题、来源或原文"; color: home.ink; font.pixelSize: 12
                 leftPadding: 12; rightPadding: 34
                 background: Rectangle { radius: 8; color: settings.palette.surface; border.color: search.activeFocus ? home.accent : home.line }
                 onTextEdited: { home.query = text; articles.positionViewAtBeginning(); home.persist() }
@@ -334,18 +356,49 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true; spacing: 8
                         AppButton { objectName: "readingOpenDirectory"; visible: home.compact && home.route === "library"; text: "☰ 来源"; onClicked: directoryDrawer.open() }
-                        Text { text: home.collectionTitle; color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold
+                        AppButton { objectName: "readingAllArticles"; visible: home.route === "library";
+                            text: "全部文章"; primary: home.collection==='all' && home.materialScope==='all'; flat: !primary;
+                            onClicked: home.choose('all') }
+                        AppButton { objectName: "readingPersonalArticles"; visible: home.route === "library";
+                            text: home.personalScope && home.collection!=="personal" ? "‹ 我的文章" : "我的文章 · "+home.personalArticleCount;
+                            primary: home.personalScope; flat: !primary; onClicked: home.choose('personal') }
+                        Text { objectName: "readingCollectionTitle";
+                            text: !home.query.trim() && (home.collection==='all' || home.collection==='personal') ? "" : home.collectionTitle;
+                            color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold
                             Layout.fillWidth: true; elide: Text.ElideRight }
                         Text { text: home.results.length + " 篇"; color: home.muted; font.pixelSize: 12 }
+                    }
+                    ColumnLayout { visible: home.collection==='personal'; Layout.fillWidth: true; spacing: 8
+                        Text { text: "按文件夹浏览"; color: home.muted; font.pixelSize: 12 }
+                        Flickable { id: personalFolderArea; objectName: "readingPersonalFolders"; Layout.fillWidth: true;
+                            Layout.preferredHeight: Math.min(206,personalFolderFlow.height); clip: true
+                            contentWidth: width; contentHeight: personalFolderFlow.height; boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                            Flow { id: personalFolderFlow; width: personalFolderArea.width; height: childrenRect.height; spacing: 10
+                                Repeater { model: home.personalFolders.filter(function(f) {return !home.query.trim() || f.name.toLowerCase().indexOf(home.query.trim().toLowerCase())>=0;})
+                                    delegate: Button { required property var modelData; objectName: "readingFolderCard_"+modelData.id
+                                        width: Math.max(158,Math.floor((personalFolderArea.width-24)/3)); height: 76; hoverEnabled: true
+                                        background: Rectangle { radius: 9; color: parent.hovered ? settings.palette.selection : settings.palette.page; border.color: home.line }
+                                        contentItem: ColumnLayout { spacing: 4
+                                            Text { text: modelData.name; color: home.ink; font.pixelSize: 14; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
+                                            Text { text: modelData.count+" 篇文章  ›"; color: home.muted; font.pixelSize: 11 }
+                                        }
+                                        leftPadding: 13; rightPadding: 13; topPadding: 9; bottomPadding: 9
+                                        onClicked: home.choose(modelData.id)
+                                    }
+                                }
+                            }
+                        }
                     }
                     RowLayout {
                         Layout.fillWidth: true; spacing: 8
                         Repeater { model: [{label:"全部", value:"all"}, {label:"未完成", value:"unfinished"}, {label:"已完成", value:"done"}]
-                            AppButton { required property var modelData; visible: home.route === "library" && home.exercises.length > 0
+                            AppButton { required property var modelData; visible: home.route === "library" && !home.personalScope && home.exercises.length > 0
                                 objectName: "readingCompletion_" + modelData.value; text: modelData.label; implicitWidth: 62
                                 primary: home.completionScope === modelData.value; flat: !primary; onClicked: home.chooseCompletion(modelData.value) }
                         }
-                        AppCombo { id: statusFilter; objectName: "readingStatusFilter"; Layout.fillWidth: true
+                        Text { visible: home.personalScope; Layout.fillWidth: true; text: "搜索范围：我的文章"; color: home.muted; font.pixelSize: 11 }
+                        AppCombo { id: statusFilter; objectName: "readingStatusFilter"; Layout.fillWidth: true; visible: !home.personalScope
                             model: ["全部状态", "未练习", "练习未完成", "练习已完成", "有错题", "有精读记录", "练习后未复习", "读过的文章"]
                             currentIndex: home.filterIndex
                             onActivated: { home.filterIndex = currentIndex; home.completionScope = "all"; articles.positionViewAtBeginning(); home.persist() } }
@@ -395,6 +448,8 @@ Item {
                                             flat: true; onClicked: home.openArticle(entry.modelData, "practice") }
                                         AppButton { objectName: "readingIntensive_" + entry.modelData.id; text: "精读"
                                             onClicked: home.openArticle(entry.modelData, "intensive") }
+                                        AppButton { objectName: "readingManage_" + entry.modelData.id; visible: entry.modelData.sourceKind==='personal_import'; text: "管理"; flat: true
+                                            onClicked: {home.managedArticle=entry.modelData; manageArticlePopup.open();} }
                                         }
                                     }
                                 }
@@ -402,7 +457,7 @@ Item {
                             Rectangle { anchors.bottom: parent.bottom; width: parent.width - 10; height: 1; color: home.line }
                         }
                         Text { anchors.centerIn: parent; visible: home.results.length === 0
-                            text: home.materials.length === 0 ? "还没有阅读材料" : home.collection === "favorites" ? "还没有收藏的文章" : "没有匹配的材料"; color: home.muted; font.pixelSize: 13 }
+                            text: home.collection==='personal' ? (home.query.trim() ? "没有匹配的个人文章" : "还没有个人文章，点击上方“导入文章”添加") : home.collection.indexOf('personal-folder-')===0 ? "文件夹里还没有文章" : home.materials.length === 0 ? "还没有阅读材料" : home.collection === "favorites" ? "还没有收藏的文章" : "没有匹配的材料"; color: home.muted; font.pixelSize: 13 }
                     }
 
                 }
@@ -465,7 +520,7 @@ Item {
             radius: 13; color: settings.palette.surface; border.color: home.line
             ColumnLayout {
                 anchors.fill: parent; anchors.margins: 10; spacing: 4
-                Text { text: "来源目录"; color: home.muted; font.pixelSize: 11; Layout.margins: 8 }
+                Text { text: "分类与来源"; color: home.muted; font.pixelSize: 11; Layout.margins: 8 }
                 AppButton { objectName: "readingMaterial_all";Layout.fillWidth: true;text: "全部文章 · "+home.languageItems.length+"篇";
                     primary: home.materialScope==='all' && home.collection==='all';flat: !primary;onClicked: {home.chooseMaterial('all');directoryDrawer.close();} }
                 AppButton { objectName: "readingMaterial_practice";Layout.fillWidth: true;text: "可练习 · "+home.exercises.length+"篇";
@@ -474,8 +529,22 @@ Item {
                     primary: home.materialScope==='intensive' && home.collection==='all';flat: !primary;onClicked: {home.chooseMaterial('intensive');directoryDrawer.close();} }
                 Rectangle { Layout.fillWidth: true; Layout.topMargin: 8; Layout.bottomMargin: 8; height: 1; color: home.line }
                 ListView {
-                    objectName: "readingDirectory"; Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                    id: readingDirectory; objectName: "readingDirectory"; Layout.fillWidth: true; Layout.fillHeight: true; clip: true
                     model: home.directory; boundsBehavior: Flickable.StopAtBounds
+                    function toggleGroup(group, visibleY) {
+                        var folds=Object.assign({},home.collapsed); folds[group]=!folds[group]; home.collapsed=folds;
+                        Qt.callLater(function() {
+                            var index=home.directory.findIndex(function(row){return row.kind==='group' && row.id===group;});
+                            if (index>=0) {
+                                readingDirectory.positionViewAtIndex(index,ListView.Beginning);
+                                readingDirectory.forceLayout();
+                                var target=readingDirectory.itemAtIndex(index);
+                                if (target) readingDirectory.contentY=Math.max(readingDirectory.originY,Math.min(
+                                    target.y-visibleY,readingDirectory.originY+Math.max(0,readingDirectory.contentHeight-readingDirectory.height)));
+                            }
+                            home.persist();
+                        });
+                    }
                     Component.onCompleted: {
                         var selected = home.directory.findIndex(function(d) { return d.id === home.collection });
                         if (selected >= 0) positionViewAtIndex(selected, ListView.Contain);
@@ -491,6 +560,9 @@ Item {
                             RowLayout { Layout.fillWidth: true; spacing: 5
                                 Text { text: folder.modelData.kind === "group" ? (home.collapsed[folder.modelData.id] ? "›  " : "⌄  ") + folder.modelData.label : folder.modelData.label
                                     color: folder.modelData.manuallyComplete ? home.accent : home.ink; font.pixelSize: 12; Layout.fillWidth: true; Layout.minimumWidth: 0; elide: Text.ElideRight }
+                                AppButton { visible: folder.modelData.kind==='set' && folder.modelData.id.indexOf('personal-folder-')===0 && folder.modelData.label!=='未分类' && folder.modelData.articleCount===0
+                                    text: "×"; flat: true; implicitWidth: 24; implicitHeight: 24
+                                    onClicked: {home.managedFolder=folder.modelData;deleteFolderPopup.open();} }
                                 Text { visible: folder.modelData.kind === "group" && folder.modelData.manuallyComplete === true
                                     text: "✓"; color: home.accent; font.pixelSize: 13 }
                                 CheckBox {
@@ -520,7 +592,7 @@ Item {
                         }
                         onClicked: {
                             if (modelData.kind === "group") {
-                                var copy = Object.assign({}, home.collapsed); copy[modelData.id] = !copy[modelData.id]; home.collapsed = copy; home.persist();
+                                readingDirectory.toggleGroup(modelData.id,folder.y-readingDirectory.contentY);
                             } else home.choose(modelData.id);
                         }
                     }
@@ -533,6 +605,74 @@ Item {
         onAboutToShow: { var origin = home.mapToItem(parent, 0, 0); x = origin.x; y = origin.y; }
         modal: true; padding: 0
         Loader { anchors.fill: parent; sourceComponent: directoryPanel }
+    }
+    Popup { id: createFolderPopup; objectName: "readingCreateFolderPopup"; parent: Overlay.overlay; anchors.centerIn: parent; modal: true; focus: true
+        width: Math.min(380,parent.width-32); padding: 20; closePolicy: Popup.CloseOnEscape
+        background: Rectangle { radius: 12; color: settings.palette.surface; border.color: home.line }
+        contentItem: ColumnLayout { spacing: 14
+            Text { text: "新建"+(home.language==='ja' ? "日语" : "英语")+"文件夹"; color: home.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
+            TextField { id: folderName; objectName: "readingNewFolderName"; Layout.fillWidth: true; implicitHeight: 40
+                leftPadding: 12; rightPadding: 12; placeholderText: "文件夹名称"; maximumLength: 100; selectByMouse: true
+                color: home.ink; placeholderTextColor: home.muted
+                background: Rectangle { radius: 8; color: settings.palette.surface
+                    border.width: folderName.activeFocus ? 2 : 1
+                    border.color: folderName.activeFocus ? home.accent : home.line }
+                onAccepted: createFolderButton.clicked() }
+            RowLayout { Layout.alignment: Qt.AlignRight; spacing: 8
+                AppButton { text: "取消"; flat: true; onClicked: createFolderPopup.close() }
+                AppButton { id: createFolderButton; objectName: "readingNewFolderSave"; text: "创建"; primary: true; enabled: folderName.text.trim().length>0
+                    onClicked: { if (reading.importer.createFolder(home.language,folderName.text)) {home.materialScope='all';home.completionScope='all';home.collection=reading.importer.folders.find(function(f){return f.language===home.language && f.name===folderName.text.trim()}).id;home.persist();createFolderPopup.close();} else {home.practiceError=reading.importer.view.error;practiceNotice.open();} } }
+            }
+        }
+    }
+    Popup { id: manageArticlePopup; objectName: "readingManageArticlePopup"; parent: Overlay.overlay; anchors.centerIn: parent; modal: true; focus: true
+        width: Math.min(420,parent.width-32); padding: 20; closePolicy: Popup.CloseOnEscape
+        background: Rectangle { radius: 12; color: settings.palette.surface; border.color: home.line }
+        contentItem: ColumnLayout { spacing: 14
+            Text { text: home.managedArticle.title || "个人文章"; Layout.fillWidth: true; elide: Text.ElideRight; color: home.ink; font.pixelSize: 17; font.weight: Font.DemiBold }
+            Text { text: "移动到文件夹"; color: home.muted; font.pixelSize: 12 }
+            AppCombo { id: moveTarget; objectName: "readingMoveTarget"; Layout.fillWidth: true
+                model: reading.importer.folders.filter(function(f) {return f.language===home.managedArticle.language;}).map(function(f) {return f.name;})
+                Component.onCompleted: currentIndex=Math.max(0,model.indexOf(home.managedArticle.setTitle)) }
+            RowLayout { Layout.fillWidth: true; spacing: 8
+                AppButton { objectName: "readingDeleteArticle"; text: "删除文章"; flat: true; onClicked: {manageArticlePopup.close();deleteArticlePopup.open();} }
+                Item { Layout.fillWidth: true }
+                AppButton { text: "取消"; flat: true; onClicked: manageArticlePopup.close() }
+                AppButton { objectName: "readingMoveArticle"; text: "移动"; primary: true
+                    onClicked: { if (reading.importer.moveArticle(home.managedArticle.id,moveTarget.currentText)) {home.collection=reading.importer.folders.find(function(f){return f.language===home.managedArticle.language && f.name===moveTarget.currentText}).id;home.persist();manageArticlePopup.close();} else {home.practiceError=reading.importer.view.error;practiceNotice.open();} } }
+            }
+        }
+        onOpened: moveTarget.currentIndex=Math.max(0,moveTarget.model.indexOf(home.managedArticle.setTitle))
+    }
+    Popup { id: deleteArticlePopup; objectName: "readingDeleteArticlePopup"; parent: Overlay.overlay; anchors.centerIn: parent; modal: true; focus: true
+        width: Math.min(420,parent.width-32); padding: 20; closePolicy: Popup.CloseOnEscape
+        background: Rectangle { radius: 12; color: settings.palette.surface; border.color: home.line }
+        contentItem: ColumnLayout { spacing: 16
+            Text { text: "删除「"+(home.managedArticle.title || "文章")+"」？"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold }
+            Text { text: "会从个人文章库移除这篇文章；原始 TXT / Markdown 文件不会删除。"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: home.muted; font.pixelSize: 12 }
+            RowLayout { Layout.alignment: Qt.AlignRight; spacing: 8
+                AppButton { text: "取消"; flat: true; onClicked: deleteArticlePopup.close() }
+                AppButton { objectName: "readingConfirmDeleteArticle"; text: "删除"; primary: true
+                    onClicked: { if (reading.importer.deleteArticle(home.managedArticle.id)) {
+                        var records=Object.assign({},home.readingRecords), favorites=Object.assign({},home.favoriteIds);
+                        delete records[home.managedArticle.id]; delete favorites[home.managedArticle.id];
+                        home.readingRecords=records; home.favoriteIds=favorites;
+                        if (home.collection===home.managedArticle.setId && !home.languageItems.some(function(a){return a.setId===home.collection;})) home.collection='all';
+                        home.persist();deleteArticlePopup.close();
+                    } else {home.practiceError=reading.importer.view.error;practiceNotice.open();} } }
+            }
+        }
+    }
+    Popup { id: deleteFolderPopup; parent: Overlay.overlay; anchors.centerIn: parent; modal: true; focus: true
+        width: Math.min(400,parent.width-32); padding: 20; closePolicy: Popup.CloseOnEscape
+        background: Rectangle { radius: 12; color: settings.palette.surface; border.color: home.line }
+        contentItem: ColumnLayout { spacing: 16
+            Text { text: "删除空文件夹「"+(home.managedFolder.label || "")+"」？"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: home.ink; font.pixelSize: 16 }
+            RowLayout { Layout.alignment: Qt.AlignRight; spacing: 8
+                AppButton { text: "取消"; flat: true; onClicked: deleteFolderPopup.close() }
+                AppButton { text: "删除"; primary: true; onClicked: {if (reading.importer.deleteFolder(home.language,home.managedFolder.label)) {if (home.collection===home.managedFolder.id) home.collection='all';home.persist();deleteFolderPopup.close();} else {home.practiceError=reading.importer.view.error;practiceNotice.open();}} }
+            }
+        }
     }
     ReadingArticlePage {
         id: articlePage; anchors.fill: parent; visible: home.articleOpen && home.articleMode === "intensive"
@@ -574,6 +714,7 @@ Item {
     }
     ReadingImportDialog {
         id: importDialog
+        libraryLanguage: home.language
         onArticleImported: function(articleId, openNow) {
             var article = reading.catalogue.find(function(a) { return a.id === articleId });
             if (!article) return;

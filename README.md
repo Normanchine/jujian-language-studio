@@ -10,6 +10,8 @@ Windows 桌面精听、阅读与写作学习工具，支持日语、英语。英
 
 ![写作页：托福练习题、英语草稿编辑与按作文整理的表达素材](docs/images/writing.webp)
 
+![阅读页：自编日语演示文章的注音、段落译文和词句操作](docs/images/reading.webp)
+
 截图来自实际应用；视频、字幕、译文和作文为独立编写的演示内容，不是模型效果评测或个人学习记录。
 
 ## 功能
@@ -89,8 +91,8 @@ Whisper **在本机转写音轨**，不使用聊天 API Key。首次转写下载
 
 1. 打开 **阅读**，选择 **导入精读文章**。
 2. 将文章题目粘贴到 **文章标题**，将内容粘贴到下方 **正文**。两处独立填写；也可通过 **选择文件**读取 TXT 或 Markdown 文档，文件名或 Markdown 一级标题会作为可修改的题目。
-3. 选择语言和目录，点击 **预览排版**，检查段落与原文。需要时可手动勾选 **Markdown**，或选择 **AI 整理段落**并再次核对结果。
-4. 点击 **仅导入**保存，或点击 **导入并精读**立即打开。文章与阅读记录保存在本机 `data/` 中。
+3. 导入默认使用当前英语或日语资料库的语言，也可以手动切换或选 **自动判断**。选择已有文件夹，点击 **预览排版**，检查段落与原文。需要时可勾选 **Markdown**，或用 **AI 整理段落**调整空白与换行；原文已分好段时可能没有变化。
+4. 点击 **仅导入**保存，或点击 **导入并精读**立即打开。资料库中点击 **我的文章**，可在主区域按文件夹浏览并搜索个人文章；左侧小目录也保留。可新建文件夹，并在个人文章的 **管理** 中移动或删除文章。文章与阅读记录保存在本机 `data/` 中。
 
 当前版本尚未提供文章网址抓取。仓库自带演示文章；本机正式版中人工核对的其他材料不会随源码克隆提供。
 
@@ -163,6 +165,7 @@ git pull --ff-only
 构建 Windows 目录版：
 
 ```powershell
+.\.venv\Scripts\python.exe make_icon.py  # 从 assets/jujian.svg 生成应用 PNG 和 EXE ICO
 .\.venv\Scripts\python.exe -c "import whisper; whisper.load_model('medium', download_root='models')"
 .\.venv\Scripts\python.exe -m pip install pyinstaller
 .\.venv\Scripts\python.exe -m PyInstaller --noconfirm MainichiNihongo.spec

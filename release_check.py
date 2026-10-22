@@ -49,9 +49,7 @@ def main():
     writer = writing.WritingBridge()
     downloads = DownloadBridge()
     from reading import ReadingBridge
-    from toefl_listening import ToeflListeningBridge
     reading = ReadingBridge(data / "reading")
-    toefl = ToeflListeningBridge(data / "toefl")
     assert settings.saveShortcuts("Alt+Left", "Alt+Right", "Space", "Ctrl+L")
     assert not settings.saveShortcuts("Space", "Space", "Space", "Space")
     assert model_settings.read_settings()["shortcut_next"] == "Alt+Right"
@@ -60,7 +58,7 @@ def main():
     engine = QQmlApplicationEngine()
     errors = []
     engine.warnings.connect(lambda values: errors.extend(str(value.toString()) for value in values))
-    for name, value in {"study": bridge, "settings": settings, "writer": writer, "downloads": downloads, "reading":reading, "toefl":toefl}.items():
+    for name, value in {"study": bridge, "settings": settings, "writer": writer, "downloads": downloads, "reading":reading}.items():
         engine.rootContext().setContextProperty(name, value)
     engine.rootContext().setContextProperty("uiAnimationsEnabled", False)
     engine.load(QUrl.fromLocalFile(str(study.ASSETS / "qml/Main.qml")))

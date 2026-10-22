@@ -51,6 +51,10 @@ TextEdit {
         if (paragraphIndex<0) return;
         if (selectedText.replace(/\u2060/g,"").trim()) {
             if (reader.selectionEditor!==paragraphText) reader.selectionEditor=paragraphText;
+            if (!queryGesture && reader.detailMode==="lookup" && reader.detail.text &&
+                    (reader.detail.paragraph!==paragraphIndex || reader.detail.start!==sourceOffset(selectionStart) || reader.detail.end!==sourceOffset(selectionEnd))) {
+                reader.activeAnnotation=({}); reader.detailMode="";
+            }
         }
         else if (reader.selectionEditor===paragraphText) reader.selectionEditor=null;
     }

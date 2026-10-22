@@ -17,12 +17,13 @@ Popup {
     property string filename: ""
     property int tab: 0
     property var importer: reading.importer
+    property string libraryLanguage: "en"
     property color ink: "#293B32"
     signal articleImported(string articleId, bool openNow)
     function invalidate() { importer.invalidate(); tab = 0; }
     function prepare() {
-        if (importer.prepare(source.text, titleInput.text, ["auto", "en", "ja"][languageInput.currentIndex],
-                             folderInput.text, markdownInput.checked, filename)) tab = 1;
+        if (importer.prepare(source.text, titleInput.text, ["en", "ja", "auto"][languageInput.currentIndex],
+                             languageInput.currentIndex===2 ? "未分类" : (folderInput.currentText || "未分类"), markdownInput.checked, filename)) tab = 1;
     }
     function save(openNow) {
         var articleId = importer.save();
@@ -33,6 +34,7 @@ Popup {
         }
     }
     onClosed: importer.cancelAI()
+    onOpened: { languageInput.currentIndex = libraryLanguage === "ja" ? 1 : 0; folderInput.currentIndex = 0; }
     background: Rectangle { radius: 14; color: settings.palette.surface; border.color: "#DFE7E1" }
     contentItem: ColumnLayout {
         spacing: 12
@@ -44,13 +46,22 @@ Popup {
         Text { text: "粘贴正文，或选择 TXT / Markdown 文件。原文会随文章一起保留。"; color: "#7B8981"; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
         RowLayout {
             Layout.fillWidth: true; spacing: 10
-            TextField { id: titleInput; objectName: "readingImportTitle"; placeholderText: "文章标题"; Layout.fillWidth: true; Layout.minimumWidth: 40; selectByMouse: true; maximumLength: 300; onTextChanged: dialog.invalidate() }
-            ComboBox { id: languageInput; objectName: "readingImportLanguage"; model: ["自动识别", "英语", "日语"]; Layout.preferredWidth: 112; onCurrentIndexChanged: dialog.invalidate() }
+            TextField { id: titleInput; objectName: "readingImportTitle"; placeholderText: "文章标题";
+                Layout.fillWidth: true; Layout.minimumWidth: 40; implicitHeight: 40; leftPadding: 12; rightPadding: 12
+                selectByMouse: true; maximumLength: 300; color: dialog.ink; placeholderTextColor: "#7B8981"
+                background: Rectangle { radius: 8; color: settings.palette.surface
+                    border.width: titleInput.activeFocus ? 2 : 1
+                    border.color: titleInput.activeFocus ? settings.palette.accent : "#DFE7E1" }
+                onTextChanged: dialog.invalidate() }
+            AppCombo { id: languageInput; objectName: "readingImportLanguage"; model: ["英语", "日语", "自动判断"]; Layout.preferredWidth: 132; onCurrentIndexChanged: { folderInput.currentIndex=0; dialog.invalidate(); } }
         }
         RowLayout {
             Layout.fillWidth: true; spacing: 10
-            Text { text: "目录"; color: "#7B8981"; font.pixelSize: 12 }
-            TextField { id: folderInput; objectName: "readingImportFolder"; text: "未分类"; placeholderText: "我的文章 / 文件夹名称"; Layout.fillWidth: true; Layout.minimumWidth: 40; selectByMouse: true; maximumLength: 100; onTextChanged: dialog.invalidate() }
+            Text { text: "保存到"; color: "#7B8981"; font.pixelSize: 12 }
+            AppCombo { id: folderInput; objectName: "readingImportFolder"; Layout.fillWidth: true; Layout.minimumWidth: 80
+                enabled: languageInput.currentIndex!==2
+                model: dialog.importer.folders.filter(function(f) { return f.language === (languageInput.currentIndex===1 ? "ja" : "en"); }).map(function(f) { return f.name; })
+                onCurrentIndexChanged: if (dialog.visible) dialog.invalidate() }
             AppButton { objectName: "readingImportFile"; text: "选择文件"; onClicked: filePicker.open() }
         }
         RowLayout {
@@ -58,7 +69,18 @@ Popup {
             AppButton { text: "原始正文"; flat: dialog.tab !== 0; onClicked: dialog.tab = 0 }
             AppButton { text: "排版预览"; flat: dialog.tab !== 1; enabled: dialog.importer.view.prepared; onClicked: dialog.tab = 1 }
             Item { Layout.fillWidth: true }
-            CheckBox { id: markdownInput; text: "Markdown"; onCheckedChanged: dialog.invalidate() }
+            CheckBox { id: markdownInput; text: "Markdown"; spacing: 8; onCheckedChanged: dialog.invalidate()
+                indicator: Rectangle { implicitWidth: 20; implicitHeight: 20; radius: 6
+                    x: markdownInput.leftPadding; y: (markdownInput.height-height)/2
+                    color: markdownInput.checked ? settings.palette.accent : settings.palette.surface
+                    border.width: markdownInput.activeFocus ? 2 : 1
+                    border.color: markdownInput.checked || markdownInput.activeFocus ? settings.palette.accent : "#C9D5CD"
+                    Text { anchors.centerIn: parent; visible: markdownInput.checked; text: "✓"; color: "white"; font.pixelSize: 14; font.weight: Font.DemiBold }
+                }
+                contentItem: Text { text: markdownInput.text; color: dialog.ink; font.pixelSize: 12
+                    leftPadding: markdownInput.indicator.width + markdownInput.spacing
+                    verticalAlignment: Text.AlignVCenter }
+            }
         }
         Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 100
@@ -88,7 +110,7 @@ Popup {
         Text {
             Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 12
             color: dialog.importer.view.error ? "#B44A4A" : "#7B8981"
-            text: dialog.importer.view.error || dialog.importer.view.message || "先预览排版，再确认导入。AI整理为可选项，使用设置中的解析模型。"
+            text: dialog.importer.view.error || dialog.importer.view.message || "先预览排版，再确认导入。AI只整理段落；原文已分段时可能没有变化。文件夹在资料库中新建。"
         }
         Flow {
             Layout.fillWidth: true; spacing: 8

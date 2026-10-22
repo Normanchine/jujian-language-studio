@@ -4,6 +4,7 @@ import QtQuick.Layouts
 
 Item {
     id: home
+    Connections { target: downloads; function onCompleted(path, title, url, cover) { linkField.clear() } }
     signal openLocal()
     signal newDraft()
     signal openProject(string path)

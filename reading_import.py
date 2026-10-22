@@ -91,6 +91,7 @@ class ReadingImportBridge(QObject):
         self.path = Path(path)
         self.requester = requester or ask_json
         self._rows = []
+        self._folders = []
         self._load_error = ''
         self._draft = None
         self._generation = 0
@@ -100,6 +101,10 @@ class ReadingImportBridge(QObject):
                 data = json.loads(self.path.read_text(encoding='utf-8'))
                 if data.get('schema') != 1 or not isinstance(data.get('articles'), list):
                     raise ValueError('文章库格式无效')
+                folders = data.get('folders', [])
+                if not isinstance(folders, list) or any(not isinstance(f, dict) or f.get('language') not in ('en', 'ja') or not isinstance(f.get('name'), str) or not f['name'].strip() for f in folders):
+                    raise ValueError('目录记录格式无效')
+                self._folders = folders
                 ids = set()
                 for row in data['articles']:
                     if (not isinstance(row, dict) or not isinstance(row.get('id'), str) or not row['id'].startswith('personal-')
@@ -109,9 +114,13 @@ class ReadingImportBridge(QObject):
                         raise ValueError('文章记录格式无效')
                     ids.add(row['id'])
                 self._rows = data['articles']
+                for row in self._rows:
+                    self._ensure_folder(row['language'], row['folder'])
         except (OSError, ValueError, TypeError, AttributeError) as exc:
             self._load_error = '个人文章库读取失败，已保留原文件：' + str(exc)
             self._view['error'] = self._load_error
+        for language in ('en', 'ja'):
+            self._ensure_folder(language, '未分类')
         self._result.connect(self._finish)
 
     @Property('QVariantMap', notify=changed)
@@ -128,6 +137,73 @@ class ReadingImportBridge(QObject):
                              order=row['created'], number=len(rows)+1, hasQuestions=False, questionCount=0,
                              practice='new', intensive='new', visited=0, mock=False))
         return rows
+
+    @staticmethod
+    def folder_id(language, name):
+        return 'personal-folder-' + hashlib.sha256((language + '\n' + name).encode()).hexdigest()[:16]
+
+    def _ensure_folder(self, language, name):
+        if not any(f['language'] == language and f['name'] == name for f in self._folders):
+            self._folders.append(dict(language=language, name=name))
+
+    @Property('QVariantList', notify=changed)
+    def folders(self):
+        return [dict(f, id=self.folder_id(f['language'], f['name'])) for f in self._folders]
+
+    def _persist(self, rows, folders):
+        temporary = self.path.with_suffix('.tmp')
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            temporary.write_text(json.dumps(dict(schema=1, articles=rows, folders=folders), ensure_ascii=False, indent=2), encoding='utf-8')
+            temporary.replace(self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @Slot(str, str, result=bool)
+    def createFolder(self, language, name):
+        name = name.strip()
+        if self._load_error or language not in ('en', 'ja') or not name or len(name) > 100 or name == '未分类':
+            self._view['error'] = self._load_error or '请输入有效的文件夹名称。'; self.changed.emit(); return False
+        if any(f['language'] == language and f['name'] == name for f in self._folders):
+            self._view['error'] = '该语言下已有同名文件夹。'; self.changed.emit(); return False
+        folders = self._folders + [dict(language=language, name=name)]
+        try: self._persist(self._rows, folders)
+        except OSError as exc:
+            self._view['error'] = '创建文件夹失败：' + str(exc); self.changed.emit(); return False
+        self._folders = folders; self._view['error'] = ''; self.changed.emit(); return True
+
+    @Slot(str, str, result=bool)
+    def moveArticle(self, article_id, folder):
+        row = next((r for r in self._rows if r['id'] == article_id), None)
+        if self._load_error or not row or not any(f['language'] == row['language'] and f['name'] == folder for f in self._folders):
+            self._view['error'] = self._load_error or '文章或目标文件夹不存在。'; self.changed.emit(); return False
+        if row['folder'] == folder: return True
+        rows = [dict(r, folder=folder) if r['id'] == article_id else r for r in self._rows]
+        try: self._persist(rows, self._folders)
+        except OSError as exc:
+            self._view['error'] = '移动文章失败：' + str(exc); self.changed.emit(); return False
+        self._rows = rows; self._view['error'] = ''; self.changed.emit(); self.imported.emit(article_id); return True
+
+    @Slot(str, result=bool)
+    def deleteArticle(self, article_id):
+        if self._load_error or not any(r['id'] == article_id for r in self._rows):
+            self._view['error'] = self._load_error or '只可删除个人导入的文章。'; self.changed.emit(); return False
+        rows = [r for r in self._rows if r['id'] != article_id]
+        try: self._persist(rows, self._folders)
+        except OSError as exc:
+            self._view['error'] = '删除文章失败：' + str(exc); self.changed.emit(); return False
+        self._rows = rows; self._view['error'] = ''; self.changed.emit(); self.imported.emit(article_id); return True
+
+    @Slot(str, str, result=bool)
+    def deleteFolder(self, language, name):
+        if name == '未分类' or self._load_error or any(r['language'] == language and r['folder'] == name for r in self._rows):
+            self._view['error'] = self._load_error or '文件夹中仍有文章，请先移动或删除文章。'; self.changed.emit(); return False
+        folders = [f for f in self._folders if not (f['language'] == language and f['name'] == name)]
+        if len(folders) == len(self._folders): return False
+        try: self._persist(self._rows, folders)
+        except OSError as exc:
+            self._view['error'] = '删除文件夹失败：' + str(exc); self.changed.emit(); return False
+        self._folders = folders; self._view['error'] = ''; self.changed.emit(); self.imported.emit(''); return True
 
     @Slot()
     def invalidate(self):
@@ -225,7 +301,9 @@ class ReadingImportBridge(QObject):
     def _finish(self, generation, result, error):
         if generation != self._generation or self._draft is None:
             return
-        self._view.update(busy=False, error=error, message='' if error else 'AI仅调整了空白与段落，请核对预览后导入。')
+        self._view.update(busy=False, error=error, message='' if error else
+                          '正文段落已足够清晰，AI没有调整。' if result == self._draft['body'] else
+                          'AI调整了空白与段落，请核对预览后导入。')
         if not error:
             self._draft['body'] = result
             self._view['text'] = result
@@ -243,16 +321,17 @@ class ReadingImportBridge(QObject):
                 return row['id']
         draft.update(id='personal-' + uuid4().hex, created=time.time_ns() // 1_000_000)
         rows = self._rows + [draft]
-        temporary = self.path.with_suffix('.tmp')
+        folders = copy.deepcopy(self._folders)
+        if not any(f['language'] == draft['language'] and f['name'] == draft['folder'] for f in folders):
+            folders.append(dict(language=draft['language'], name=draft['folder']))
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary.write_text(json.dumps(dict(schema=1, articles=rows), ensure_ascii=False, indent=2), encoding='utf-8')
-            temporary.replace(self.path)
+            self._persist(rows, folders)
         except OSError as exc:
             self._view['error'] = '导入保存失败，正文仍保留：' + str(exc)
             self.changed.emit()
             return ''
         self._rows = rows
+        self._folders = folders
         self.imported.emit(draft['id'])
         self._view.update(message='文章已导入。', error='')
         self.changed.emit()

@@ -389,6 +389,8 @@ Item {
                                         Text { text: paragraphBlock.translation.status;color: reader.muted;font.pixelSize: 11;Layout.fillWidth: true;wrapMode: Text.Wrap }
                                         AppButton { visible: !paragraphBlock.translation.text && reader.assistance.translationBusy!==paragraphBlock.index && reader.assistance.translationQueued.indexOf(paragraphBlock.index)<0;
                                             text: "重试";flat: true;onClicked: reader.assistant.translateParagraph(paragraphBlock.index) }
+                                        AppButton { visible: !!paragraphBlock.translation.text; text: "重新翻译"; flat: true;
+                                            onClicked: reader.assistant.retranslateParagraph(paragraphBlock.index) }
                                     }
                                 }
                             }

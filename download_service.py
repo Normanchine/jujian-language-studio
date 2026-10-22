@@ -312,9 +312,11 @@ class DownloadBridge(QObject):
         self.changed.emit()
 
     def _completed(self, path: str, title: str, url: str, cover: str) -> None:
-        self._status = f"下载完成：{Path(path).name}"
+        self._status = f"已加入资料库：{Path(path).name}"
         self._error = False
         self.completed.emit(path, title, url, cover)
+        self._formats, self._title, self._thumbnail = [], "", ""
+        self._url = ""
         self.changed.emit()
 
     def _failed(self, detail: str) -> None:

@@ -7,7 +7,7 @@ import QtQuick.Effects
 
 ApplicationWindow {
     id: root
-    property string appVersion: "0.2.0"
+    property string appVersion: "0.2.6"
     property var readingPreviewItems: []
     property var readingHomeState: reading.homeState
     width: 1180
@@ -20,7 +20,7 @@ ApplicationWindow {
     title: study.hasMedia ? "句间 — " + study.title : "句间"
     color: "transparent"
     background: Rectangle {
-        color: root.pageColor; radius: root.maximized ? 0 : 16
+        color: root.pageColor; radius: root.maximized ? 0 : 12
         antialiasing: true
     }
     contentItem.layer.enabled: !root.maximized
@@ -43,7 +43,7 @@ ApplicationWindow {
     Rectangle {
         id: cornerMask
         width: root.width; height: root.height
-        radius: root.maximized ? 0 : 16
+        radius: root.maximized ? 0 : 12
         antialiasing: true
         color: "white"; visible: false
         layer.enabled: true
@@ -72,14 +72,22 @@ ApplicationWindow {
         }
         return seconds
     }
-    property int highlightedSentenceIndex: {
+    // Cross the Python/QML boundary only when subtitles change. Reading the
+    // full QVariantList on each playback tick copies every sentence and token.
+    property var sentenceStarts: {
         var segments = study.segments
-        var selected = 0
-        for (var i = 0; i < segments.length; i++) {
-            if (segments[i].start > highlightSeconds) break
-            selected = i
+        return segments.map(function(segment) { return segment.start })
+    }
+    property int highlightedSentenceIndex: {
+        var starts = sentenceStarts
+        var seconds = highlightSeconds
+        var low = 0, high = starts.length
+        while (low < high) {
+            var middle = Math.floor((low + high) / 2)
+            if (starts[middle] <= seconds) low = middle + 1
+            else high = middle
         }
-        return selected
+        return Math.max(0, low - 1)
     }
     onHighlightedSentenceIndexChanged: if (readingList.followPlayback) Qt.callLater(readingList.scrollToActive)
     property bool listeningKeysEnabled: page === "listen" && study.hasMedia
@@ -90,7 +98,7 @@ ApplicationWindow {
     onScrubbingChanged: if (scrubbing) highlightSeekFloor = -1
     property string page: "home"
     onPageChanged: {
-        if (page !== "reading") readingView.leavePractice()
+        if (page !== "reading") readingView.leavePage()
     }
     property bool sidebarCollapsed: false
     property int pendingResumeMs: 0
@@ -113,11 +121,23 @@ ApplicationWindow {
         }
     }
     property bool maximized: visibility === Window.Maximized
-    onClosing: {
+    onClosing: function(close) {
+        if (!writingView.saveNow()) { close.accepted = false; saveFailureDialog.open(); return; }
         root.saveCurrentPlayback()
-        writingView.saveNow()
         writer.pauseTask()
-        readingView.leavePractice()
+        readingView.leavePage()
+    }
+    Dialog {
+        id: saveFailureDialog
+        objectName: "saveFailureDialog"
+        anchors.centerIn: parent
+        width: Math.min(520, root.width - 40)
+        modal: true; title: "作文尚未保存"
+        standardButtons: Dialog.Close
+        contentItem: ColumnLayout {
+            Text { Layout.fillWidth: true; wrapMode: Text.Wrap; text: writer.saveError }
+            AppButton { text: "重试保存"; onClicked: { if (writer.retrySave()) saveFailureDialog.close() } }
+        }
     }
     property var rates: [0.75, 1.0, 1.25, 1.5]
     property int rateIndex: 1
@@ -203,7 +223,9 @@ ApplicationWindow {
             anchors.verticalCenter: parent.verticalCenter; spacing: 16
             NavGlyph { width: 22; height: 22; kind: nav.iconName
                 active: nav.selected; activeColor: nav.accent }
-            Text { visible: !root.sidebarCollapsed; text: nav.label
+            Text { text: nav.label
+                opacity: root.sidebarCollapsed ? 0 : 1
+                Behavior on opacity { NumberAnimation { duration: uiAnimationsEnabled ? 140 : 0; easing.type: Easing.OutCubic } }
                 color: nav.selected ? "#2A3B31" : "#536158"
                 font.family: "Microsoft YaHei UI"; font.pixelSize: 14
                 font.weight: nav.selected ? Font.DemiBold : Font.Normal
@@ -327,14 +349,17 @@ ApplicationWindow {
 
     Rectangle {
         id: sidebar
+        objectName: "mainSidebar"
         anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
-        width: root.sidebarCollapsed ? 64 : 216; color: root.sidebarColor
+        width: root.sidebarCollapsed ? 64 : 216; color: root.sidebarColor; clip: true
+        Behavior on width { NumberAnimation { duration: uiAnimationsEnabled ? 210 : 0; easing.type: Easing.OutCubic } }
         Rectangle { anchors.right: parent.right; height: parent.height; width: 1; color: Qt.darker(root.sidebarColor, 1.08) }
         Row {
             x: 15; y: 15; spacing: 11
             Image { width: 34; height: 34; source: "../assets/jujian.png"
                 fillMode: Image.PreserveAspectFit; smooth: true }
-            Column { visible: !root.sidebarCollapsed; spacing: 1
+            Column { spacing: 1; opacity: root.sidebarCollapsed ? 0 : 1
+                Behavior on opacity { NumberAnimation { duration: uiAnimationsEnabled ? 140 : 0; easing.type: Easing.OutCubic } }
                 Text { text: "句间"; color: "#26372F"
                     font.family: "Microsoft YaHei UI"; font.pixelSize: 16; font.weight: Font.DemiBold }
                 Text { text: "听读与写作"; color: "#8A968D"
@@ -350,17 +375,17 @@ ApplicationWindow {
         Column {
             anchors.left: parent.left; anchors.right: parent.right
             anchors.leftMargin: 8; anchors.rightMargin: 8; y: 89; spacing: 4
-            NavButton { width: parent.width; label: "首页"; iconName: "home"; selected: root.page === "home"
+            NavButton { objectName: "homeNavigation"; width: parent.width; label: "首页"; iconName: "home"; selected: root.page === "home"
                 onClicked: { player.pause(); root.saveCurrentPlayback(); study.refreshProjects(); root.page = "home" } }
             NavButton { width: parent.width; label: "精听"; iconName: "listen"; selected: root.page === "listen"
                 onClicked: { if (!study.hasMedia) study.refreshProjects(); root.page = study.hasMedia ? "listen" : "library" } }
             NavButton { width: parent.width; label: "写作"; iconName: "writing"; selected: root.page === "writing"
                 onClicked: { writingView.showLibrary(); root.page = "writing" } }
-            NavButton { width: parent.width; label: "阅读"; iconName: "reading"; selected: root.page === "reading"
-                onClicked: { player.pause(); readingView.showHome(); root.page = "reading" } }
+            NavButton { objectName: "readingNavigation"; width: parent.width; label: "阅读"; iconName: "reading"; selected: root.page === "reading"
+                onClicked: { player.pause(); if (root.page === "reading") readingView.showHome(); root.page = "reading" } }
             NavButton { width: parent.width; label: "资料库"; iconName: "library"; selected: root.page === "library"
                 onClicked: { study.refreshProjects(); root.page = "library" } }
-            NavButton { width: parent.width; label: "设置"; iconName: "settings"; selected: root.page === "settings"
+            NavButton { objectName: "settingsNavigation"; width: parent.width; label: "设置"; iconName: "settings"; selected: root.page === "settings"
                 onClicked: root.page = "settings" }
         }
         Rectangle { x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 16
@@ -714,7 +739,7 @@ ApplicationWindow {
                     id: readingList
                     objectName: "readingList"
                     x: 1; y: 38; width: parent.width - 2; height: parent.height - 39
-                    clip: true; model: study.segments
+                    clip: true; model: study.sentenceModel
                     property int trackedIndex: -1
                     property bool followPlayback: true
                     onMovementStarted: { followScroll.stop(); followPlayback = false }
@@ -729,6 +754,10 @@ ApplicationWindow {
                         function onSegmentsChanged() {
                             readingList.trackedIndex = -1
                             if (readingList.followPlayback) Qt.callLater(readingList.scrollToActive)
+                        }
+                        function onSentenceUpdated(index) {
+                            if (readingList.followPlayback && index === root.highlightedSentenceIndex)
+                                Qt.callLater(readingList.scrollToActive)
                         }
                         function onMediaChanged() { readingList.returnToCurrent() }
                     }
@@ -751,6 +780,7 @@ ApplicationWindow {
                     }
                     delegate: Rectangle {
                         id: readingCard
+                        objectName: "listeningSentence_" + index
                         required property int index
                         required property var modelData
                         property bool active: index === root.highlightedSentenceIndex

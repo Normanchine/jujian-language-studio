@@ -121,6 +121,10 @@ Item {
     function leavePractice() {
         if (articleOpen && articleMode === "practice") { practicePage.savePosition(); reading.leave(); articleOpen = false; }
     }
+    function leavePage() {
+        if (articleOpen && articleMode === "intensive") articlePage.savePosition();
+        leavePractice();
+    }
     function openStudyFavorites() {
         studyReturnRoute=route;studyReturnArticle=articleOpen;studyReturnSelection=selectedArticle;
         if (articleOpen) {articlePage.savePosition();articleOpen=false;}

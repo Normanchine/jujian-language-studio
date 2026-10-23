@@ -6,6 +6,11 @@ __pycache__/
 
 # Local settings, projects, essays, media, and credentials
 data/
+data-backups/
+data.lock
+data-before-restore-*/
+data-restore-*/
+data-interrupted-*/
 !data/.gitkeep
 .env
 .env.*

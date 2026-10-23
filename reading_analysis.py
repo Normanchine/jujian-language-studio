@@ -52,14 +52,7 @@ def load_json(path, fallback):
         return copy.deepcopy(fallback)
 
 
-def save_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + '.' + uuid4().hex + '.tmp')
-    try:
-        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+from core.storage import atomic_json as save_json
 
 
 def engine_identity(task='analysis'):

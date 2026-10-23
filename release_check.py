@@ -11,6 +11,8 @@ def main():
     if sys.stdout is not None:
         sys.stdout.reconfigure(encoding="utf-8")
 
+    temporary = tempfile.TemporaryDirectory()
+    os.environ["JUJIAN_DATA_DIR"] = temporary.name
     os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
     from PySide6.QtCore import QObject, QPointF, QPoint, Qt, QTimer, QUrl, QMetaObject, QCoreApplication
@@ -32,7 +34,6 @@ def main():
     if sys.stdout is None:
         sys.stdout = (captures / "self-check.log").open("w", encoding="utf-8")
         sys.stderr = sys.stdout
-    temporary = tempfile.TemporaryDirectory()
     data = Path(temporary.name)
     study.DATA, study.PROJECTS, study.LAST = data, data / "projects", data / "last.txt"
     study.REMOVED_PROJECTS = data / "removed"
@@ -64,7 +65,7 @@ def main():
     engine.load(QUrl.fromLocalFile(str(study.ASSETS / "qml/Main.qml")))
     assert engine.rootObjects(), errors
     window = engine.rootObjects()[0]
-    assert window.property("appVersion") == "0.2.0"
+    assert window.property("appVersion") == "0.2.6"
     quick = shiboken6.wrapInstance(shiboken6.getCppPointer(window)[0], QQuickWindow)
     player = window.findChild(QMediaPlayer, "mediaPlayer")
     frames = []
@@ -147,6 +148,15 @@ def main():
             QTest.mouseClick(quick, Qt.LeftButton, Qt.NoModifier, card_point)
             assert bridge.activeIndex == 0, "Clicking another card should seek to that sentence"
             bridge.chooseSentence(1); QTest.qWait(40); player.pause()
+            resets = []
+            bridge.sentenceModel.modelReset.connect(lambda: resets.append(True))
+            bridge._read_enrichment(0, bridge._project["segments"][0]["text"], {
+                "_task": "translation", "translation": "第一句的测试翻译。", "translation_model": "test"})
+            bridge._read_enrichment(1, bridge._project["segments"][1]["text"], {
+                "grammar": "用于验证单句解析回填不会重建字幕列表。", "vocabulary": [], "model": "test"})
+            QTest.qWait(300)
+            assert not resets, "Translation/analysis result reset the subtitle model"
+            assert reading_list.property("count") == 12
             QTimer.singleShot(300, large)
         except Exception as exc:
             failed.append(traceback.format_exc()); app.exit(1)

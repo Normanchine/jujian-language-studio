@@ -34,6 +34,7 @@ Item {
     FolderDialog { id: folderPicker; title: "选择下载目录"
         onAccepted: folderField.text = settings.localFolder(selectedFolder.toString()) }
     Flickable {
+        objectName: "settingsFlick"
         anchors.fill: parent; clip: true; contentWidth: width; contentHeight: panel.height + 24
         ScrollBar.vertical: ScrollBar {
             id: settingsScroll
@@ -182,6 +183,8 @@ Item {
                                                  analysisRoute.currentIndex ? "cloud" : "local",
                                                  writingRoute.currentIndex ? "cloud" : "local") }
                 }
+                Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
+                DataSafetyPanel { width: parent.width }
             }
         }
     }

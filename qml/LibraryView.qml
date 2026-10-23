@@ -4,6 +4,7 @@ import QtQuick.Layouts
 
 Item {
     id: library
+    objectName: "mediaLibrary"
     signal openProject(string path)
     property color themeAccent: "#C94859"
     property string folder: "all"
@@ -11,6 +12,18 @@ Item {
     property string progressFilter: "全部"
     property string pendingDelete: ""
     property string pendingDeleteTitle: ""
+    property var pendingDeleteOptions: ({})
+    property string deleteError: ""
+
+    function confirmDelete(path, title) {
+        pendingDelete = path
+        pendingDeleteTitle = title
+        pendingDeleteOptions = study.deletionOptions(path)
+        deleteError = ""
+        recycleMedia.checked = !!pendingDeleteOptions.defaultRecycle
+        keepMedia.checked = !recycleMedia.checked
+        deleteConfirm.open()
+    }
 
     function filtered() {
         var result = []
@@ -146,9 +159,7 @@ Item {
                             AppButton { x: parent.width - 154; y: 8; width: 58; height: 31; z: 2
                                 text: "删除"; flat: true
                                 onClicked: {
-                                    library.pendingDelete = modelData.path
-                                    library.pendingDeleteTitle = modelData.title
-                                    deleteConfirm.open()
+                                    library.confirmDelete(modelData.path, modelData.title)
                                 } }
                             Text { x: parent.width - 86; y: 34; width: 75
                                 text: modelData.available ? "打开 ›" : "不可打开"
@@ -172,23 +183,49 @@ Item {
         objectName: "mediaDeleteConfirm"
         modal: true; focus: true
         anchors.centerIn: Overlay.overlay
-        width: 420; height: 205; padding: 24
+        width: Math.min(560, library.width - 32); padding: 24
+        height: deleteContent.implicitHeight + topPadding + bottomPadding
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         Overlay.modal: Rectangle { color: "#660F1C16" }
         background: Rectangle { radius: 14; color: "#FFFFFF"; border.color: "#E2E7E2" }
         contentItem: Column {
-            spacing: 13
-            Text { text: "从资料库移除媒体"; color: "#26342C"; font.pixelSize: 18
+            id: deleteContent
+            spacing: 10
+            Text { text: "删除媒体"; color: "#26342C"; font.pixelSize: 18
                 font.weight: Font.DemiBold }
             Text { width: parent.width; text: "「" + library.pendingDeleteTitle + "」"
                 color: "#35443A"; font.pixelSize: 13; elide: Text.ElideRight }
             Text { width: parent.width; wrapMode: Text.Wrap
-                text: "音视频原文件不会删除；字幕和学习记录移入恢复目录。"
+                text: library.pendingDeleteOptions.mediaPath || ""
+                color: "#77857A"; font.pixelSize: 11; maximumLineCount: 3; elide: Text.ElideMiddle }
+            RadioButton {
+                id: keepMedia; objectName: "mediaDeleteKeepFile"
+                text: "仅从资料库移除"; checked: true
+            }
+            Text { width: parent.width; text: "保留本地音视频文件。"; leftPadding: 30
                 color: "#77857A"; font.pixelSize: 12 }
+            RadioButton {
+                id: recycleMedia; objectName: "mediaDeleteRecycleFile"
+                text: "同时将音视频移入系统回收站"
+                enabled: !!library.pendingDeleteOptions.canRecycle
+            }
+            Text { width: parent.width; wrapMode: Text.Wrap; leftPadding: 30
+                text: library.pendingDeleteOptions.reason || "可在 Windows 回收站中恢复文件。"
+                color: "#77857A"; font.pixelSize: 12 }
+            Text { width: parent.width; wrapMode: Text.Wrap
+                text: "两种方式都会将字幕和学习记录保留在恢复目录。"
+                color: "#77857A"; font.pixelSize: 12 }
+            Text { width: parent.width; wrapMode: Text.Wrap; visible: text.length > 0
+                text: library.deleteError; color: "#B64050"; font.pixelSize: 12 }
             Row { spacing: 9; anchors.right: parent.right
                 AppButton { text: "取消"; width: 82; onClicked: deleteConfirm.close() }
-                AppButton { text: "移出资料库"; width: 108; primary: true; destructive: true
-                    onClicked: { study.deleteProject(library.pendingDelete); deleteConfirm.close() } }
+                AppButton { objectName: "mediaDeleteApply"
+                    text: recycleMedia.checked ? "移入回收站并移出" : "移出资料库"
+                    width: recycleMedia.checked ? 166 : 108; primary: true; destructive: true
+                    onClicked: {
+                        if (study.deleteProject(library.pendingDelete, recycleMedia.checked)) deleteConfirm.close()
+                        else library.deleteError = study.status
+                    } }
             }
         }
     }

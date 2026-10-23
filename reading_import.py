@@ -89,6 +89,7 @@ class ReadingImportBridge(QObject):
     def __init__(self, path, parent=None, requester=None):
         super().__init__(parent)
         self.path = Path(path)
+        self.preferences_path = self.path.with_name('import-preferences.json')
         self.requester = requester or ask_json
         self._rows = []
         self._folders = []
@@ -96,6 +97,16 @@ class ReadingImportBridge(QObject):
         self._draft = None
         self._generation = 0
         self._view = dict(prepared=False, busy=False, text='', message='', error='')
+        self._preferences = dict(schema=1, source_folder='', import_folders={})
+        try:
+            if self.preferences_path.exists():
+                preferences = json.loads(self.preferences_path.read_text(encoding='utf-8'))
+                if (preferences.get('schema') == 1
+                        and isinstance(preferences.get('source_folder'), str)
+                        and isinstance(preferences.get('import_folders'), dict)):
+                    self._preferences = preferences
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
         try:
             if self.path.exists():
                 data = json.loads(self.path.read_text(encoding='utf-8'))
@@ -150,14 +161,34 @@ class ReadingImportBridge(QObject):
     def folders(self):
         return [dict(f, id=self.folder_id(f['language'], f['name'])) for f in self._folders]
 
-    def _persist(self, rows, folders):
-        temporary = self.path.with_suffix('.tmp')
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    @Property(str, notify=changed)
+    def lastSourceFolder(self):
+        folder = Path(self._preferences['source_folder']) if self._preferences['source_folder'] else None
+        return QUrl.fromLocalFile(str(folder)).toString() if folder and folder.is_dir() else ''
+
+    @Slot(str, result=str)
+    def lastImportFolder(self, language):
+        folder = self._preferences['import_folders'].get(language, '')
+        return folder if isinstance(folder, str) and any(
+            f['language'] == language and f['name'] == folder for f in self._folders) else ''
+
+    def _remember_preference(self, key, value, language=None):
+        preferences = copy.deepcopy(self._preferences)
+        if language is None:
+            preferences[key] = value
+        else:
+            preferences[key][language] = value
+        from core.storage import atomic_json
         try:
-            temporary.write_text(json.dumps(dict(schema=1, articles=rows, folders=folders), ensure_ascii=False, indent=2), encoding='utf-8')
-            temporary.replace(self.path)
-        finally:
-            temporary.unlink(missing_ok=True)
+            atomic_json(self.preferences_path, preferences)
+        except OSError:
+            return
+        self._preferences = preferences
+        self.changed.emit()
+
+    def _persist(self, rows, folders):
+        from core.storage import atomic_json
+        atomic_json(self.path, dict(schema=1, articles=rows, folders=folders))
 
     @Slot(str, str, result=bool)
     def createFolder(self, language, name):
@@ -230,6 +261,7 @@ class ReadingImportBridge(QObject):
             if '\x00' in raw or len(raw) > MAX_TEXT:
                 raise ValueError('请选择有效的纯文本文件（最多20万字）。')
             heading = re.search(r'^#\s+(.+)$', raw, re.M) if path.suffix.lower() != '.txt' else None
+            self._remember_preference('source_folder', str(path.parent.resolve()))
             return dict(ok=True, raw=raw, title=heading.group(1).strip() if heading else path.stem,
                         filename=path.name, markdown=path.suffix.lower() != '.txt')
         except (OSError, ValueError) as exc:
@@ -318,6 +350,7 @@ class ReadingImportBridge(QObject):
             if row['language'] == draft['language'] and text_tokens(row['body']) == text_tokens(draft['body']):
                 self._view.update(message='该正文已导入，已保留原有文章和学习记录。', error='')
                 self.changed.emit()
+                self._remember_preference('import_folders', row['folder'], row['language'])
                 return row['id']
         draft.update(id='personal-' + uuid4().hex, created=time.time_ns() // 1_000_000)
         rows = self._rows + [draft]
@@ -332,6 +365,7 @@ class ReadingImportBridge(QObject):
             return ''
         self._rows = rows
         self._folders = folders
+        self._remember_preference('import_folders', draft['folder'], draft['language'])
         self.imported.emit(draft['id'])
         self._view.update(message='文章已导入。', error='')
         self.changed.emit()

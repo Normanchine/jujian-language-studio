@@ -35,11 +35,7 @@ def catalogue_source(row, source):
     return row
 
 
-def write_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-    temporary.replace(path)
+from core.storage import atomic_json as write_json
 
 
 def validate_paper(raw: dict) -> dict:

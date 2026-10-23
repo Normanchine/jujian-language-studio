@@ -33,8 +33,14 @@ Popup {
             close();
         }
     }
+    function restoreFolder() {
+        var language = languageInput.currentIndex === 1 ? "ja" : "en";
+        var remembered = importer.lastImportFolder(language);
+        var index = folderInput.model.indexOf(remembered);
+        folderInput.currentIndex = index >= 0 ? index : 0;
+    }
     onClosed: importer.cancelAI()
-    onOpened: { languageInput.currentIndex = libraryLanguage === "ja" ? 1 : 0; folderInput.currentIndex = 0; }
+    onOpened: { languageInput.currentIndex = libraryLanguage === "ja" ? 1 : 0; restoreFolder(); }
     background: Rectangle { radius: 14; color: settings.palette.surface; border.color: "#DFE7E1" }
     contentItem: ColumnLayout {
         spacing: 12
@@ -53,7 +59,7 @@ Popup {
                     border.width: titleInput.activeFocus ? 2 : 1
                     border.color: titleInput.activeFocus ? settings.palette.accent : "#DFE7E1" }
                 onTextChanged: dialog.invalidate() }
-            AppCombo { id: languageInput; objectName: "readingImportLanguage"; model: ["英语", "日语", "自动判断"]; Layout.preferredWidth: 132; onCurrentIndexChanged: { folderInput.currentIndex=0; dialog.invalidate(); } }
+            AppCombo { id: languageInput; objectName: "readingImportLanguage"; model: ["英语", "日语", "自动判断"]; Layout.preferredWidth: 132; onCurrentIndexChanged: { dialog.restoreFolder(); dialog.invalidate(); } }
         }
         RowLayout {
             Layout.fillWidth: true; spacing: 10
@@ -62,7 +68,7 @@ Popup {
                 enabled: languageInput.currentIndex!==2
                 model: dialog.importer.folders.filter(function(f) { return f.language === (languageInput.currentIndex===1 ? "ja" : "en"); }).map(function(f) { return f.name; })
                 onCurrentIndexChanged: if (dialog.visible) dialog.invalidate() }
-            AppButton { objectName: "readingImportFile"; text: "选择文件"; onClicked: filePicker.open() }
+            AppButton { objectName: "readingImportFile"; text: "选择文件"; onClicked: { if (dialog.importer.lastSourceFolder) filePicker.currentFolder = dialog.importer.lastSourceFolder; filePicker.open(); } }
         }
         RowLayout {
             Layout.fillWidth: true; spacing: 6
@@ -125,6 +131,7 @@ Popup {
     }
     FileDialog {
         id: filePicker
+        objectName: "readingSourceFilePicker"
         title: "选择精读文章"
         nameFilters: ["文章 (*.txt *.md *.markdown)"]
         fileMode: FileDialog.OpenFile

@@ -71,21 +71,24 @@ Item {
 
     function saveNow() {
         if (writer.currentPath && !reviewMode && !libraryMode && !notesMode)
-            writer.saveDraft(titleField.text, topicField.text, draftText.text)
+            return writer.saveDraft(titleField.text, topicField.text, draftText.text)
+        return !writer.saveError
     }
-    function showLibrary() { saveNow(); notesMode = false; writer.pauseTask(); reviewMode = false; libraryMode = true; librarySideOpen = false }
+    function showLibrary() { if (!saveNow()) return; notesMode = false; writer.pauseTask(); reviewMode = false; libraryMode = true; librarySideOpen = false }
     function showMaterials() {
         if (libraryMode || !writer.currentPath) librarySideOpen = true
         else { sideMode = "library"; setSide(true) }
     }
     function startDraft(language, mode) {
-        saveNow(); writer.newDraft(language)
+        if (!saveNow()) return;
+        writer.newDraft(language)
         if (mode !== "practice") writer.setMode(mode)
         notesMode = false; libraryMode = false; librarySideOpen = false; reviewMode = false
         elapsedSeconds = 0
     }
     function openDraft(path) {
-        saveNow(); writer.openDraft(path)
+        if (!saveNow()) return;
+        writer.openDraft(path)
         notesMode = false; libraryMode = false; librarySideOpen = false; reviewMode = false
         elapsedSeconds = 0
     }
@@ -204,7 +207,7 @@ Item {
         ColumnLayout { anchors.fill: parent; spacing: 12
             Text { text: "删除作文"; color: view.ink; font.pixelSize: 18; font.weight: Font.DemiBold }
             Text { Layout.fillWidth: true; wrapMode: Text.Wrap
-                text: "即将删除「" + view.pendingDeleteTitle + "」。删除后无法在应用中恢复。"
+                text: "即将删除「" + view.pendingDeleteTitle + "」。将移入回收站，可在设置中恢复。"
                 color: view.muted; font.pixelSize: 12 }
             Item { Layout.fillHeight: true }
             RowLayout { Layout.fillWidth: true
@@ -328,7 +331,7 @@ Item {
             AppButton { objectName: "writingCaptureNote"; text: "摘录 / 笔记"; flat: true
                 onClicked: view.captureWritingNote() }
             AppButton { visible: !view.reviewMode && !!writer.current.review; text: "查看上次批改"
-                onClicked: { view.saveNow(); view.reviewMode = true } }
+                onClicked: { if (!view.saveNow()) return; view.reviewMode = true } }
             AppButton { visible: !view.reviewMode; text: view.sideOpen ? "收起素材" : "打开素材"
                 onClicked: { if (!view.sideOpen) view.sideMode = "both"; view.setSide(!view.sideOpen) } }
         }
@@ -382,14 +385,14 @@ Item {
                                 color: view.themeAccent; font.pixelSize: 14; font.weight: Font.DemiBold }
                             AppButton { objectName: "writingTaskStart"; visible: view.taskState === "ready" || view.taskState === "paused"
                                 text: view.taskState === "ready" ? "开始计时" : "继续计时"; primary: true
-                                onClicked: { view.saveNow(); writer.startTask(); draftText.forceActiveFocus() } }
+                                onClicked: { if (!view.saveNow()) return; writer.startTask(); draftText.forceActiveFocus() } }
                             AppButton { objectName: "writingTaskPause"; visible: view.taskState === "running"; text: "暂停"
-                                onClicked: { view.saveNow(); writer.pauseTask() } }
+                                onClicked: { if (!view.saveNow()) return; writer.pauseTask() } }
                             AppButton { objectName: "writingTaskUntimed"; visible: ["ready", "paused", "untimed"].indexOf(view.taskState) >= 0
                                 text: view.taskState === "untimed" ? "切回计时" : "不限时练习"; flat: true
-                                onClicked: { view.saveNow(); writer.untimedTask() } }
+                                onClicked: { if (!view.saveNow()) return; writer.untimedTask() } }
                             AppButton { objectName: "writingTaskFinish"; visible: ["running", "paused", "untimed"].indexOf(view.taskState) >= 0
-                                text: "结束作答"; onClicked: { view.saveNow(); writer.finishTask() } }
+                                text: "结束作答"; onClicked: { if (!view.saveNow()) return; writer.finishTask() } }
                             AppButton { objectName: "writingTaskEdit"; visible: view.taskState === "finished"; text: "继续修改"
                                 onClicked: { writer.editTask(); draftText.forceActiveFocus() } }
                             AppButton { objectName: "writingTaskOriginal"; visible: !!writer.current.submission; text: "查看原稿"; flat: true
@@ -428,7 +431,7 @@ Item {
                                     onClicked: { view.topicEditing = true; topicField.forceActiveFocus() } }
                                 AppButton { visible: view.topicEditing && !!topicField.text.trim()
                                     text: "完成"; flat: true
-                                    onClicked: { view.saveNow(); view.topicEditing = false; draftText.forceActiveFocus() } }
+                                    onClicked: { if (!view.saveNow()) return; view.topicEditing = false; draftText.forceActiveFocus() } }
                             }
                             ScrollView { id: promptScroll; Layout.fillWidth: true; Layout.fillHeight: true; visible: topicCard.printed; clip: true
                                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
@@ -455,7 +458,7 @@ Item {
                                 ? "本次目标 · " + (writer.current.targets || []).join("、") : "本次未指定目标表达"
                             Layout.fillWidth: true; elide: Text.ElideRight; color: view.muted; font.pixelSize: 11 }
                         AppButton { visible: !view.taskBound; text: writer.busy ? "生成中…" : "AI 模拟题"; flat: true; enabled: !writer.busy
-                            onClicked: { view.saveNow(); writer.generateTopic() } }
+                            onClicked: { if (!view.saveNow()) return; writer.generateTopic() } }
                     }
                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#E9EDE7" }
                     ScrollView { id: draftScroll; Layout.fillWidth: true; Layout.fillHeight: true; visible: !view.reviewMode
@@ -522,7 +525,7 @@ Item {
                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#E9EDE7" }
                     RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 38
                         Text { Layout.fillWidth: true; elide: Text.ElideRight; color: view.muted; font.pixelSize: 11
-                            text: writer.busy ? (view.reviewWaiting ? writer.status + " · " + view.reviewElapsedSeconds + " 秒" : writer.status)
+                            text: writer.saveError ? writer.saveError : writer.busy ? (view.reviewWaiting ? writer.status + " · " + view.reviewElapsedSeconds + " 秒" : writer.status)
                                 : view.reviewMode ? "批改是提交时的快照；草稿仍可继续修改。"
                                 : "自动保存  ·  " + (writer.current.language === "ja" ? draftText.text.trim().length + " 字"
                                   : (draftText.text.trim() ? draftText.text.trim().split(/\s+/).length : 0) + " 词") }
@@ -531,7 +534,7 @@ Item {
                         AppButton { objectName: "writingReviewSubmit"; visible: !view.reviewMode; text: writer.busy ? "正在批改…" : "提交批改"; primary: true
                             enabled: !writer.busy && draftText.text.trim().length > 0
                                 && (!view.taskBound || ["finished", "editing", "untimed"].indexOf(view.taskState) >= 0)
-                            onClicked: { view.saveNow(); view.reviewElapsedSeconds = 0; view.reviewWaiting = true; writer.review() } }
+                            onClicked: { if (!view.saveNow()) return; view.reviewElapsedSeconds = 0; view.reviewWaiting = true; writer.review() } }
                     }
                 }
             }
@@ -569,7 +572,7 @@ Item {
                             visible: !view.reviewMode && view.sideMode !== "library"
                                      && writer.current.practice_style !== "timed"
                             enabled: !writer.busy
-                            onClicked: { view.saveNow(); writer.generateMaterials("常用、准确") } }
+                            onClicked: { if (!view.saveNow()) return; writer.generateMaterials("常用、准确") } }
                         AppButton { objectName: "addSidebarMaterialButton"
                             text: "+ 添加"; visible: !view.reviewMode && view.sideMode !== "ai"
                             onClicked: editorWritingMaterials.openAdd() }
@@ -592,7 +595,7 @@ Item {
                             Layout.fillWidth: true; Layout.fillHeight: true
                             compact: true; returnToDraft: true; sourceFilter: view.sideMode
                             dialogWidth: view.width; dialogHeight: view.height; themeAccent: view.themeAccent
-                            onGenerateAi: { view.saveNow(); writer.generateMaterials("常用、准确") }
+                            onGenerateAi: { if (!view.saveNow()) return; writer.generateMaterials("常用、准确") }
                             onPreviewAi: function(material) {
                                 view.previewMaterial = material; materialPreviewPopup.open()
                             }

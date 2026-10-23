@@ -18,16 +18,16 @@ from pathlib import Path
 from uuid import uuid4
 
 import av
-from PySide6.QtCore import QObject, Property, QProcess, QThread, QUrl, Signal, Slot
+from PySide6.QtCore import QFile, QObject, Property, QProcess, QThread, QUrl, Signal, Slot
 
 from enrich_job import MODEL, TRANSLATION_MODEL, ModelResponseError, explain, translate, validate_analysis
 from model_settings import read_settings
 from linguistics import display_tokens
 
 
-ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-ASSETS = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else ROOT
-DATA = ROOT / "data"
+from core.paths import ROOT, ASSETS, DATA
+from core.storage import atomic_json
+from core.listening_model import SentenceListModel
 PROJECTS = DATA / "projects"
 LAST = DATA / "last-project.txt"
 REMOVED_PROJECTS = DATA / "removed-projects"
@@ -150,6 +150,7 @@ class StudyBridge(QObject):
     stateChanged = Signal()
     mediaChanged = Signal()
     segmentsChanged = Signal()
+    sentenceUpdated = Signal(int)
     projectsChanged = Signal()
     seekRequested = Signal(int)
 
@@ -157,6 +158,8 @@ class StudyBridge(QObject):
         super().__init__()
         PROJECTS.mkdir(parents=True, exist_ok=True)
         self._project: dict = {}
+        self._sentence_model = SentenceListModel(self)
+        self.segmentsChanged.connect(self._reset_sentence_model)
         self._project_file: Path | None = None
         self._active_index = 0
         self._active_word = -1
@@ -184,12 +187,21 @@ class StudyBridge(QObject):
         digest = hashlib.sha256(str(media.resolve()).casefold().encode("utf-8")).hexdigest()[:20]
         return PROJECTS / f"{digest}.json"
 
-    def _save(self) -> None:
+    def _reset_sentence_model(self):
+        self._sentence_model.replace(self._project.get("segments", []))
+
+    def _update_sentence(self, index):
+        self._sentence_model.update_sentence(index, self._project.get("segments", []))
+        self.sentenceUpdated.emit(index)
+
+    @Property(QObject, constant=True)
+    def sentenceModel(self):
+        return self._sentence_model
+
+    def _save(self, *, compact: bool = False) -> None:
         if not self._project_file:
             return
-        temp = self._project_file.with_suffix(".json.tmp")
-        temp.write_text(json.dumps(self._project, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(self._project_file)
+        atomic_json(self._project_file, self._project, compact=compact)
         LAST.write_text(str(self._project_file), encoding="utf-8")
 
     @Property("QVariantList", notify=projectsChanged)
@@ -290,36 +302,106 @@ class StudyBridge(QObject):
             self._status = f"归类失败：{exc}"
             self.stateChanged.emit()
 
-    @Slot(str)
-    def deleteProject(self, path: str) -> None:
+    @staticmethod
+    def _downloaded_media(project: dict) -> bool:
+        if project.get("media_origin"):
+            return project["media_origin"] == "download"
+        # Existing downloads predate explicit provenance metadata.
+        from download_service import allowed_url
+        return allowed_url(str(project.get("source", "")))
+
+    def _recycle_block_reason(self, project_path: Path, media: Path) -> str:
+        if media.is_symlink() or not media.is_file():
+            return "源文件不存在或是快捷链接，可仅移出资料库。"
+        for other in PROJECTS.glob("*.json"):
+            if other == project_path or other.name.endswith(".bak.json"):
+                continue
+            try:
+                item = json.loads(other.read_text(encoding="utf-8"))
+                if Path(item["media_path"]).resolve() == media.resolve():
+                    return "其他资料库项目也在使用此文件，可仅移出当前项目。"
+            except (OSError, ValueError, KeyError, TypeError):
+                return "部分项目无法读取，暂时无法确认文件是否共用，可仅移出资料库。"
+        return ""
+
+    @Slot(str, result="QVariantMap")
+    def deletionOptions(self, path: str) -> dict:
+        project_path = self._library_project(path)
+        try:
+            if project_path is None:
+                raise ValueError("项目不存在，请刷新资料库。")
+            project = json.loads(project_path.read_text(encoding="utf-8"))
+            media = Path(project["media_path"])
+            reason = self._recycle_block_reason(project_path, media)
+            return {"mediaPath": str(media), "canRecycle": not bool(reason), "reason": reason,
+                    "defaultRecycle": self._downloaded_media(project) and not reason}
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return {"mediaPath": "", "canRecycle": False, "defaultRecycle": False, "reason": str(exc)}
+
+    @Slot(str, result=bool)
+    @Slot(str, bool, result=bool)
+    def deleteProject(self, path: str, recycle_media: bool = False) -> bool:
         if self._busy or self._enriching:
             self._status = "正在处理当前媒体，请完成后再删除项目。"
             self.stateChanged.emit()
-            return
+            return False
         project_path = self._library_project(path)
         if not project_path:
             self._status = "项目不存在，请刷新资料库。"
             self.stateChanged.emit()
-            return
+            return False
+        archived = None
+        was_active = project_path == self._project_file
         try:
+            project = json.loads(project_path.read_text(encoding="utf-8"))
+            media = Path(project["media_path"])
+            if recycle_media:
+                reason = self._recycle_block_reason(project_path, media)
+                if reason:
+                    raise OSError(reason)
             REMOVED_PROJECTS.mkdir(parents=True, exist_ok=True)
             archived = REMOVED_PROJECTS / f"{project_path.stem}-{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:8]}.json"
             project_path.replace(archived)
-            if project_path == self._project_file:
+            if was_active:
                 self._project_file = None
                 self._project = {}
                 self._active_index = 0
                 self._active_word = -1
-                if LAST.is_file() and LAST.read_text(encoding="utf-8").strip() == str(project_path):
-                    LAST.unlink()
                 self.mediaChanged.emit()
                 self.segmentsChanged.emit()
-            self._status = "已从资料库移除；音视频原文件保留，项目存入恢复目录。"
+            if recycle_media:
+                moved = QFile.moveToTrash(str(media.resolve()))
+                # PySide versions expose either the bool or (bool, trashPath)
+                # overload for this static call.
+                if isinstance(moved, tuple):
+                    moved = moved[0]
+                if not moved:
+                    raise OSError("无法移入系统回收站，可能被其他程序占用；项目和源文件已保留。")
+            try:
+                if LAST.is_file() and LAST.read_text(encoding="utf-8").strip() == str(project_path):
+                    LAST.unlink()
+            except OSError:
+                pass  # A stale last-project hint must not undo successful recycling.
+            self._status = ("已移出资料库，音视频已移入系统回收站；字幕和学习记录保留在恢复目录。"
+                            if recycle_media else "已从资料库移除；音视频原文件保留，项目存入恢复目录。")
             self.refreshProjects()
             self.stateChanged.emit()
-        except OSError as exc:
+            return True
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            if archived is not None and archived.is_file():
+                try:
+                    archived.replace(project_path)
+                    if was_active:
+                        self._load_project(project_path)
+                except (OSError, ValueError, KeyError, TypeError, av.error.FFmpegError) as recovery_error:
+                    self._status = f"移除失败，学习记录保留在 {archived}；恢复项目失败：{recovery_error}"
+                    self.refreshProjects()
+                    self.stateChanged.emit()
+                    return False
             self._status = f"移除项目失败：{exc}"
+            self.refreshProjects()
             self.stateChanged.emit()
+            return False
 
     @Slot(str)
     def openProject(self, path: str) -> None:
@@ -346,6 +428,7 @@ class StudyBridge(QObject):
                 project = {
                     "schema_version": 1, "language": "ja", "title": title or media.stem,
                     "media_path": str(media), "source": source,
+                    "media_origin": "download",
                     "has_video": has_video, "duration": duration, "segments": [],
                 }
                 if cover and Path(cover).is_file():
@@ -376,7 +459,7 @@ class StudyBridge(QObject):
             return
         self._project["playback_ms"] = position
         self._project["playback_completed"] = bool(duration and position >= duration * 0.995)
-        self._save()
+        self._save(compact=True)
 
     @Slot()
     def finishPlayback(self) -> None:
@@ -420,6 +503,7 @@ class StudyBridge(QObject):
             "title": media.stem,
             "media_path": str(media),
             "source": "本地文件",
+            "media_origin": "local",
             "has_video": has_video,
             "duration": duration,
             "segments": [],
@@ -607,7 +691,7 @@ class StudyBridge(QObject):
             if position_ms < target["start"] * 1000 - 400 or position_ms > target["end"] * 1000 + 400:
                 self._navigation_time = 0.0
         seconds = position_ms / 1000
-        index = max(0, min(len(segments) - 1, bisect_right([s["start"] for s in segments], seconds) - 1))
+        index = max(0, bisect_right(segments, seconds, key=lambda segment: segment["start"]) - 1)
         words = segments[index].get("words", [])
         word = next((i for i, item in enumerate(words) if item["start"] <= seconds < item["end"]), -1)
         if index != self._active_index or word != self._active_word:
@@ -691,7 +775,7 @@ class StudyBridge(QObject):
         }
         self._save()
         self._status = "本句解析已保存。"
-        self.segmentsChanged.emit()
+        self._update_sentence(self._active_index)
         self.stateChanged.emit()
         return True
 
@@ -820,8 +904,8 @@ class StudyBridge(QObject):
                 validated["model"] = analysis.get("model") or MODEL
                 segments[index]["analysis"] = validated
             self._enrich_done += 1
-            self._save()
-            self.segmentsChanged.emit()
+            self._save(compact=True)
+            self._update_sentence(index)
             action = "翻译" if self._enrich_task == "translation" else "解析"
             self._status = f"{self._enrich_source}{action} {self._enrich_done} / {self._enrich_total} 句；生成内容待校对。"
             self.stateChanged.emit()

@@ -50,12 +50,8 @@ class ReadingSavedBridge(QObject):
 
     def _save(self):
         if self._load_error:raise OSError('收藏文件无法读取，请先恢复原文件')
-        self.path.parent.mkdir(parents=True,exist_ok=True)
-        temporary=self.path.with_name(self.path.name+'.'+uuid4().hex+'.tmp')
-        try:
-            temporary.write_text(json.dumps({'version':1,'items':list(self._items.values())},ensure_ascii=False,indent=2),encoding='utf-8')
-            temporary.replace(self.path)
-        finally:temporary.unlink(missing_ok=True)
+        from core.storage import atomic_json
+        atomic_json(self.path, {'version':1,'items':list(self._items.values())})
 
     def toggle(self,item):
         if not self._document:return False

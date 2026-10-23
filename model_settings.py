@@ -14,8 +14,10 @@ import keyring
 from keyring.backends.Windows import WinVaultKeyring
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-CONFIG = ROOT / "data" / "settings.json"
+from core.paths import ROOT, DATA
+from core.storage import atomic_json
+from data_safety import DataSafetyBridge
+CONFIG = DATA / "settings.json"
 KEY_SERVICE = "mainichi-nihongo-cloud-api"
 KEY_USER = "default"
 QWEN_KEY_USER = "aliyun-qwen"
@@ -97,6 +99,11 @@ class SettingsBridge(QObject):
         super().__init__()
         self._data = read_settings()
         self._status = ""
+        self._safety = DataSafetyBridge(CONFIG.parent, self)
+
+    @Property(QObject, constant=True)
+    def dataSafety(self):
+        return self._safety
 
     @Property("QVariantMap", notify=changed)
     def values(self) -> dict:
@@ -138,6 +145,7 @@ class SettingsBridge(QObject):
         if any(route not in {"local", "cloud"} for route in (translation, analysis, writing)):
             return False
         folder = Path(download_dir.strip()).expanduser()
+        previous = self._data
         try:
             folder.mkdir(parents=True, exist_ok=True)
             self._data = {
@@ -148,13 +156,12 @@ class SettingsBridge(QObject):
                 "theme": self._data["theme"],
             }
             CONFIG.parent.mkdir(parents=True, exist_ok=True)
-            temporary = CONFIG.with_suffix(".json.tmp")
-            temporary.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(CONFIG)
+            atomic_json(CONFIG, self._data)
             self._status = "设置已保存。"
             self.changed.emit()
             return True
         except OSError as exc:
+            self._data = previous
             self._status = f"保存设置失败：{exc}"
             self.changed.emit()
             return False
@@ -167,9 +174,7 @@ class SettingsBridge(QObject):
         self._data = {**previous, "theme": theme}
         try:
             CONFIG.parent.mkdir(parents=True, exist_ok=True)
-            temporary = CONFIG.with_suffix(".json.tmp")
-            temporary.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(CONFIG)
+            atomic_json(CONFIG, self._data)
         except OSError as exc:
             self._data = previous
             self._status = f"保存主题失败：{exc}"
@@ -190,9 +195,7 @@ class SettingsBridge(QObject):
         self._data = {**previous, **updates}
         try:
             CONFIG.parent.mkdir(parents=True, exist_ok=True)
-            temporary = CONFIG.with_suffix(".json.tmp")
-            temporary.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(CONFIG)
+            atomic_json(CONFIG, self._data)
         except OSError as exc:
             self._data = previous
             self._status = f"保存设置失败：{exc}"

@@ -204,13 +204,14 @@ class DownloadJob(QThread):
                 except (OSError, ValueError):
                     pass
             self.progressChanged.emit(1.0)
-            self.completed.emit(str(media), str(info.get("title") or title), self.url, cover)
+            self.completed.emit(str(media), title, self.url, cover)
         except Exception as exc:
             self.failed.emit(str(exc))
 
 
 class DownloadBridge(QObject):
     changed = Signal()
+    titleChanged = Signal()
     completed = Signal(str, str, str, str)
 
     def __init__(self) -> None:
@@ -237,7 +238,7 @@ class DownloadBridge(QObject):
     @Property(bool, notify=changed)
     def downloading(self) -> bool: return self._mode == "download" and self.busy
 
-    @Property(str, notify=changed)
+    @Property(str, notify=titleChanged)
     def title(self) -> str: return self._title
 
     @Property(str, notify=changed)
@@ -271,11 +272,13 @@ class DownloadBridge(QObject):
             return
         if not allowed_url(url):
             self._formats, self._title, self._thumbnail = [], "", ""
+            self.titleChanged.emit()
             self._status, self._error = "请输入 HTTPS 的 B 站视频或小宇宙公开单集链接。", True
             self.changed.emit()
             return
         self._url, self._mode = url.strip(), "inspect"
         self._formats, self._title, self._thumbnail = [], "", ""
+        self.titleChanged.emit()
         self._status, self._error = "正在读取音视频信息…", False
         self._launch(DownloadJob(self._url, "inspect"))
 
@@ -284,6 +287,7 @@ class DownloadBridge(QObject):
         if self.busy:
             return
         self._formats, self._title, self._thumbnail = [], "", ""
+        self.titleChanged.emit()
         self._status = ""
         self.changed.emit()
 
@@ -293,7 +297,7 @@ class DownloadBridge(QObject):
             return
         self._mode, self._progress = "download", 0.0
         self._status, self._error = "正在下载…", False
-        self._launch(DownloadJob(self._url, "download", self._formats[index], name or self._title))
+        self._launch(DownloadJob(self._url, "download", self._formats[index], name.strip() or self._title))
 
     @Slot()
     def cancel(self) -> None:
@@ -302,6 +306,7 @@ class DownloadBridge(QObject):
 
     def _inspected(self, result: dict) -> None:
         self._title = result["title"]
+        self.titleChanged.emit()
         self._thumbnail = result["thumbnail"]
         self._formats = result["formats"]
         self._status = f"找到 {len(self._formats)} 种可用格式。" if self._formats else "未找到可下载格式。"
@@ -316,6 +321,7 @@ class DownloadBridge(QObject):
         self._error = False
         self.completed.emit(path, title, url, cover)
         self._formats, self._title, self._thumbnail = [], "", ""
+        self.titleChanged.emit()
         self._url = ""
         self.changed.emit()
 

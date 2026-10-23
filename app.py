@@ -26,6 +26,33 @@ def windows_animations_enabled() -> bool:
         return True
 
 
+def use_windows_window_effects(window) -> None:
+    """Ask DWM for a subtle shadow and rounded corners on the custom frame."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        class Margins(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_int) for name in ("left", "right", "top", "bottom")]
+
+        hwnd = int(window.winId())
+        dwm = ctypes.windll.dwmapi
+        dwm.DwmSetWindowAttribute.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+        dwm.DwmSetWindowAttribute.restype = ctypes.c_long
+        # DWMWA_NCRENDERING_POLICY = 2, DWMNCRP_ENABLED = 2.
+        render_policy = ctypes.c_int(2)
+        dwm.DwmSetWindowAttribute(hwnd, 2, ctypes.byref(render_policy), ctypes.sizeof(render_policy))
+        # DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2.
+        corners = ctypes.c_int(2)
+        dwm.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(corners), ctypes.sizeof(corners))
+        dwm.DwmExtendFrameIntoClientArea.argtypes = [ctypes.c_void_p, ctypes.POINTER(Margins)]
+        dwm.DwmExtendFrameIntoClientArea.restype = ctypes.c_long
+        dwm.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(Margins(1, 1, 1, 1)))
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--release-check":
         from release_check import main as check_main
@@ -39,11 +66,11 @@ def main() -> int:
     # The bundled Qt multimedia FFmpeg backend is preferred for local media.
     os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
-    from PySide6.QtCore import QUrl, QTimer
+    from PySide6.QtCore import QUrl, QTimer, QLockFile
     from PySide6.QtGui import QIcon
     import PySide6.QtMultimedia
     from PySide6.QtQml import QQmlApplicationEngine
-    from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+    from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QMessageBox
     from study import ASSETS, ROOT, StudyBridge
     from download_service import DownloadBridge
     from model_settings import SettingsBridge
@@ -52,6 +79,20 @@ def main() -> int:
 
     milestones = {"imports_seconds": round(perf_counter() - STARTED, 3)}
     app = QApplication(sys.argv)
+    from core.paths import DATA
+    from core.storage import DataStore
+    DATA.parent.mkdir(parents=True, exist_ok=True)
+    data_lock = QLockFile(str(DATA.with_name(DATA.name + '.lock')))
+    data_lock.setStaleLockTime(0)
+    if not data_lock.tryLock(0):
+        QMessageBox.warning(None, '句间', '此数据目录已由另一个句间进程使用：\n' + str(DATA))
+        return 1
+    try:
+        DataStore(DATA).apply_pending()
+    except Exception as exc:
+        QMessageBox.critical(None, '数据恢复未完成', str(exc) + '\n原记录和恢复材料已保留；请检查备份目录。')
+        return 1
+    milestones["data_ready_seconds"] = round(perf_counter() - STARTED, 3)
     app.setApplicationName("句间")
     app.setOrganizationName("LocalStudy")
     app.setWindowIcon(QIcon(str(ASSETS / "assets" / "jujian.png")))
@@ -60,6 +101,9 @@ def main() -> int:
     settings = SettingsBridge()
     writer = WritingBridge()
     reading = ReadingBridge()
+    milestones["bridges_ready_seconds"] = round(perf_counter() - STARTED, 3)
+    settings.dataSafety.essaysRestored.connect(writer.refresh)
+    QTimer.singleShot(1500, settings.dataSafety.automaticBackup)
     app.aboutToQuit.connect(reading.leave)
     app.aboutToQuit.connect(bridge.close)
     app.aboutToQuit.connect(writer.pauseTask)
@@ -74,6 +118,7 @@ def main() -> int:
     if not engine.rootObjects():
         return 1
     window = engine.rootObjects()[0]
+    use_windows_window_effects(window)
     milestones["window_seconds"] = round(perf_counter() - STARTED, 3)
 
     def record_startup() -> None:
@@ -82,7 +127,7 @@ def main() -> int:
         milestones["event_loop_seconds"] = round(perf_counter() - STARTED, 3)
         milestones["time"] = datetime.now().isoformat(timespec="seconds")
         try:
-            with (ROOT / "data" / "startup.log").open("a", encoding="utf-8") as log:
+            with (DATA / "startup.log").open("a", encoding="utf-8") as log:
                 log.write(json.dumps(milestones) + "\n")
         except OSError:
             pass

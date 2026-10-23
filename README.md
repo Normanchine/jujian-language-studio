@@ -194,4 +194,4 @@ git pull --ff-only
 
 产物位于 `dist/句间/`，必须保留 EXE、`句间.pkg` 和 `_internal/` 整个目录。分发前排除个人 `data/`。源码仓库不等于已发布的 EXE 安装包。QML 可独立更新；Python 或依赖变化需要重新打包。
 
-项目背景、使用中发现的问题和持续修复记录整理在[句间项目页](https://zhangyicong.xyz/zh/projects/jujian-language-studio/)。README 侧重安装、使用、更新和当前限制。
+项目背景和界面示例见[句间项目页](https://zhangyicong.xyz/zh/projects/jujian-language-studio/)。README 侧重安装、使用、更新和当前限制。

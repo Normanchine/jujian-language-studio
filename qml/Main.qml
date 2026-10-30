@@ -7,7 +7,7 @@ import QtQuick.Effects
 
 ApplicationWindow {
     id: root
-    property string appVersion: "0.2.6"
+    property string appVersion: "0.2.9"
     property var readingPreviewItems: []
     property var readingHomeState: reading.homeState
     width: 1180
@@ -125,6 +125,7 @@ ApplicationWindow {
         if (!writingView.saveNow()) { close.accepted = false; saveFailureDialog.open(); return; }
         root.saveCurrentPlayback()
         writer.pauseTask()
+        if (writer.saveError) { close.accepted = false; saveFailureDialog.open(); return; }
         readingView.leavePage()
     }
     Dialog {
@@ -553,11 +554,12 @@ ApplicationWindow {
             anchors.fill: parent; visible: root.page === "home"
             themeAccent: root.accentColor
             onOpenLocal: mediaPicker.open()
-            onNewDraft: { writer.newDraft("ja"); writingView.libraryMode = false; root.page = "writing" }
+            onNewDraft: { if (!writingView.saveNow() || !writer.newDraft("ja")) return; writingView.libraryMode = false; root.page = "writing" }
             onOpenProject: { root.saveCurrentPlayback(); study.openProject(path) }
             onOpenDraft: { writer.openDraft(path); writingView.libraryMode = false; root.page = "writing" }
             onOpenLibrary: { study.refreshProjects(); root.page = "library" }
             onOpenWriting: { writer.refresh(); writingView.showLibrary(); root.page = "writing" }
+            onOpenSettings: root.page = "settings"
         }
         LibraryView { anchors.fill: parent; visible: root.page === "library"
             themeAccent: root.accentColor
@@ -566,7 +568,7 @@ ApplicationWindow {
             themeAccent: root.accentColor }
         ReadingHome { id: readingView; anchors.fill: parent; visible: root.page === "reading"
             materials: root.readingPreviewItems.length ? root.readingPreviewItems.filter(function(a) {
-                return a.sourceKind !== "personal_import" && a.sourceKind !== "user_paste";
+                return a.sourceKind !== "personal_import" && a.sourceKind !== "user_paste" && a.sourceKind !== "personal_practice";
             }).concat(reading.importedCatalogue) : reading.catalogue; savedState: root.readingHomeState
             onStateEdited: function(state) { root.readingHomeState = state; reading.saveHomeState(state) } }
         SettingsView { anchors.fill: parent; visible: root.page === "settings"

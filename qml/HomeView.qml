@@ -11,6 +11,7 @@ Item {
     signal openDraft(string path)
     signal openLibrary()
     signal openWriting()
+    signal openSettings()
     property color ink: "#26342C"
     property color muted: "#748178"
     property color themeAccent: "#C94859"
@@ -48,7 +49,7 @@ Item {
             x: 10; y: 8; width: parent.width - 20; spacing: 18
 
             Rectangle {
-                width: parent.width; height: downloads.ready ? 276 : 132
+                width: parent.width; height: downloads.ready ? 306 : 160
                 radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
                 Image {
                     x: 8; y: 7; width: 116; height: 116
@@ -62,22 +63,32 @@ Item {
                     RowLayout {
                         width: parent.width; height: 39; spacing: 9
                         TextField {
-                            id: linkField; Layout.fillWidth: true; Layout.preferredHeight: 39
-                            placeholderText: "粘贴 B 站或小宇宙单集链接"
+                            id: linkField; objectName: "mediaLinkField"; Layout.fillWidth: true; Layout.preferredHeight: 39
+                            placeholderText: "粘贴 YouTube、B 站或小宇宙单集链接"
                             font.family: "Microsoft YaHei UI"; font.pixelSize: 13
+                            selectionColor: settings.palette.selection; selectedTextColor: home.ink
                             background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: linkField.activeFocus ? home.themeAccent : "#DDE2DF" }
                             onTextEdited: downloads.clearPreview()
                             onAccepted: downloads.inspect(text)
+                            ContextMenu.menu: AppTextMenu { objectName: "mediaLinkContextMenu"; editor: linkField }
                         }
                         AppButton { text: downloads.inspecting ? "解析中…" : "解析链接"
-                            enabled: !downloads.busy && linkField.text.trim().length > 0
+                            enabled: !downloads.busy && !downloads.network.busy && linkField.text.trim().length > 0
                             onClicked: downloads.inspect(linkField.text) }
                         AppButton { text: "本地文件"; onClicked: home.openLocal() }
                         AppButton { text: "新建作文"; onClicked: home.newDraft() }
                     }
+                    Row { spacing: 10
+                        AppButton { text: "代理与节点设置"; flat: true; height: 25; onClicked: home.openSettings() }
+                        Text { anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 11; color: home.muted
+                            text: settings.values.youtube_auto_node ? "YouTube 自动选节点 · 国内来源直连" : "YouTube 使用代理 · 国内来源直连" }
+                    }
                     Text { text: downloads.status; visible: downloads.status.length > 0
                         color: downloads.error ? "#B64052" : home.muted
-                        width: parent.width; elide: Text.ElideRight; font.pixelSize: 11 }
+                        width: parent.width; elide: Text.ElideRight; font.pixelSize: 11
+                        ToolTip.visible: statusHover.hovered && downloads.status.length > 0
+                        ToolTip.text: downloads.status
+                        HoverHandler { id: statusHover } }
                     Row {
                         visible: downloads.ready; width: parent.width; spacing: 16
                         Rectangle {
@@ -100,11 +111,13 @@ Item {
                                     color: home.muted; font.pixelSize: 12 }
                             }
                             RowLayout { width: parent.width; height: 36
-                                TextField { id: downloadName; Layout.fillWidth: true
+                                TextField { id: downloadName; objectName: "mediaDownloadName"; Layout.fillWidth: true
                                     text: downloads.title; placeholderText: "保存文件名"
+                                    selectionColor: settings.palette.selection; selectedTextColor: home.ink
+                                    ContextMenu.menu: AppTextMenu { editor: downloadName }
                                     background: Rectangle { radius: 7; color: "#FAFBFA"; border.color: "#DDE2DF" } }
                                 AppButton { text: downloads.downloading ? "下载中…" : "下载并加入资料库"
-                                    enabled: !downloads.busy && downloadFormat.currentIndex >= 0
+                                    enabled: !downloads.busy && !downloads.network.busy && downloadFormat.currentIndex >= 0
                                     onClicked: downloads.start(downloadFormat.currentIndex, downloadName.text) }
                                 AppButton { visible: downloads.downloading; text: "取消"; onClicked: downloads.cancel() }
                             }

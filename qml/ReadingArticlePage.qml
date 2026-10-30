@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "ReadingPosition.js" as ReadingPosition
 
 Item {
     id: reader
@@ -24,6 +25,8 @@ Item {
     property var paragraphs: (article.body || "").split(/\n\s*\n/)
     property var expandedTranslations: ({})
     property bool allTranslations: false
+    property bool restoringPosition: false
+    property int positionRevision: 0
     readonly property string selectedText: selectionEditor ? selectionEditor.selectedText.replace(/\u2060/g,"") : ""
     readonly property var bandLabels: ({basic:"N5–N4",intermediate:"N3–N2",advanced:"N1"})
     readonly property bool allBands: assistance.preferences.bands.indexOf("unknown")>=0
@@ -103,7 +106,6 @@ Item {
         next[index]=!next[index];expandedTranslations=next;
         if (next[index]) {
             assistant.translateParagraph(index);
-            Qt.callLater(function() {passage.positionViewAtIndex(index,ListView.Beginning);});
         }
     }
     function sentenceHtml(item) {
@@ -114,11 +116,10 @@ Item {
     function savePosition() {
         if (mode!=="intensive") return;
         if (article.language==="en" && englishReader.item) {englishReader.item.savePosition();return;}
-        var index=passage.indexAt(10,passage.contentY+10);
-        var top=passage.headerItem ? passage.headerItem.y : passage.originY;
-        bookmarkEdited({position:Math.max(0,passage.contentY-top),readParagraph:Math.max(0,index)+1,paragraphCount:paragraphs.length,visited:Date.now()});
+        if (!restoringPosition) bookmarkEdited(ReadingPosition.capture(passage, paragraphs));
     }
     function resume() {
+        var revision=++positionRevision;
         gesture.reset();
         gesture.setCursorStyle(settings.palette.accent,article.language!=="en");
         activeAnnotation=({});detailMode="";selectionEditor=null;expandedTranslations=({});allTranslations=false;
@@ -128,13 +129,13 @@ Item {
             if (englishReader.item) englishReader.item.restorePosition();
             return;
         }
-        Qt.callLater(function() {
-            passage.forceLayout();
-            var top=passage.headerItem ? passage.headerItem.y : passage.originY;
-            passage.contentY=top+Math.min(record.position || 0,Math.max(0,passage.contentHeight-passage.height));
-        });
+        restoringPosition=true;
+        ReadingPosition.restore(passage, Object.assign({},record), paragraphs,
+            function() {return reader.positionRevision===revision && reader.visible;},
+            function() {reader.restoringPosition=false;});
     }
     function focusFavorite(item) {
+        ++positionRevision; restoringPosition=false;
         passage.positionViewAtIndex(item.paragraph,ListView.Center);
         activeAnnotation=Object.assign({},item,{id:item.annotation_id,kind:"grammar",label:"语法结构",fromFavorite:true});detailMode="annotation";
     }
@@ -268,6 +269,11 @@ Item {
             Layout.fillWidth: true;spacing: 8
             ReadingBackButton { objectName: "readingBack";onClicked: {reader.savePosition();reader.backRequested();} }
             Text { text: "精读";font.pixelSize: 19;font.weight: Font.DemiBold;color: reader.ink }
+            ReadingCompletionCheck {
+                objectName: "readingArticleComplete"
+                checked: reader.record.readComplete === true
+                onClicked: reader.bookmarkEdited({readComplete: !reader.record.readComplete})
+            }
             Item { Layout.fillWidth: true }
             AppButton { objectName: "readingOpenGrammarFavorites";text: "语法收藏";flat: true;onClicked: {reader.savePosition();reader.grammarFavoritesRequested();} }
             AppButton { objectName: "readingArticleFavorite";text: reader.favorite ? "★ 已收藏" : "☆ 收藏";flat: true;onClicked: reader.favoriteRequested() }
@@ -343,6 +349,7 @@ Item {
                             id: paragraphBlock
                             required property string modelData
                             required property int index
+                            property real bookmarkHeight: rubyParagraph.parent.y+ rubyParagraph.parent.height
                             width: passage.width-12;spacing: 8
                             property var translation: reader.assistance.translations[index] || ({text:"",status:""})
                             property var page: reader

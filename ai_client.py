@@ -25,11 +25,13 @@ def _parse_json(value: str) -> dict:
     return parsed
 
 
-def ask_json(prompt: str, task: str, token_limit: int = 1600, *, careful: bool = False) -> dict:
+def ask_json(prompt: str, task: str, token_limit: int = 1600, *, careful: bool = False, backend: str | None = None) -> dict:
     settings = read_settings()
     if task not in {"translation", "analysis", "writing"}:
         raise ValueError("未知模型任务")
-    backend = settings[f"{task}_backend"]
+    backend = backend or settings[f"{task}_backend"]
+    if backend not in {'cloud', 'local'}:
+        raise ValueError('未知模型运行方式')
     if backend == "cloud":
         endpoint = settings["cloud_endpoint"].rstrip("/")
         model = settings["cloud_model"]

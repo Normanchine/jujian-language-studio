@@ -15,6 +15,7 @@ from study import ASSETS, DATA
 from reading_analysis import ReadingAnalysisBridge
 from reading_materials import load_bundle
 from reading_import import ReadingImportBridge
+from reading_paper_import import ReadingPaperImportBridge
 
 
 def catalogue_source(row, source):
@@ -45,7 +46,9 @@ def validate_paper(raw: dict) -> dict:
     if paper.get('schema_version') != 1 or not paper.get('id') or not paper.get('title'):
         raise ValueError('阅读材料格式无效')
     source = paper.get('source', {})
-    if not isinstance(source,dict) or (source.get('kind') != 'self_authored_demo' and source.get('review_status') != 'approved'):
+    personal = isinstance(source, dict) and source.get('kind') == 'personal_practice'
+    if (not isinstance(source,dict) or (personal and source.get('review_status') not in {'self_reviewed', 'user_confirmed'})
+            or (not personal and source.get('kind') != 'self_authored_demo' and source.get('review_status') != 'approved')):
         raise ValueError('阅读材料尚未复核')
     if not source.get('label') or not isinstance(paper.get('body'),str) or not paper['body'].strip():
         raise ValueError('阅读来源或原文缺失')
@@ -58,9 +61,11 @@ def validate_paper(raw: dict) -> dict:
         if not isinstance(q,dict) or not q.get('id') or q['id'] in seen or q.get('type') != 'single':
             raise ValueError('题号重复或题型尚未支持')
         seen.add(q['id'])
-        if not q.get('stem') or not isinstance(q.get('options'),list) or len(q['options']) != 4 or not all(isinstance(x,str) and x.strip() for x in q['options']):
+        if (not isinstance(q.get('stem'), str) or not q['stem'].strip() or not isinstance(q.get('options'),list)
+                or not (2 <= len(q['options']) <= 6 if personal else len(q['options']) == 4)
+                or not all(isinstance(x,str) and x.strip() for x in q['options'])):
             raise ValueError('题干或选项不完整')
-        if q.get('answer') not in ('A','B','C','D') or not q.get('explanation'):
+        if q.get('answer') not in list('ABCDEF'[:len(q['options'])]) or not isinstance(q.get('explanation'), str) or not q['explanation'].strip():
             raise ValueError('答案或解析缺失')
         for e in q.get('evidence', []):
             p = e.get('paragraph', 0)
@@ -83,6 +88,8 @@ class ReadingBridge(QObject):
         self._intensive = ReadingAnalysisBridge(self._dir / 'intensive', self)
         self._importer = ReadingImportBridge(self._dir / 'personal-articles.json', self)
         self._importer.imported.connect(lambda _id: self.catalogueChanged.emit())
+        self._paper_importer = ReadingPaperImportBridge(self._dir / 'personal-papers.json', self)
+        self._paper_importer.papersChanged.connect(self._reload_personal_papers)
         self._home_path = self._dir.parent / 'reading-home.json'
         try:
             self._home_state = json.loads(self._home_path.read_text(encoding='utf-8'))
@@ -96,6 +103,7 @@ class ReadingBridge(QObject):
         if len({p['id'] for p in raw}) != len(raw):
             raise ValueError('阅读材料编号重复')
         self._papers = {p['id']: validate_paper(p) for p in raw}
+        self._papers.update({p['id']: p for p in self._paper_importer.stored_papers()})
         self._records = {}
         self._broken = []
         for path in (self._dir / 'attempts').glob('*.json'):
@@ -110,7 +118,8 @@ class ReadingBridge(QObject):
                 keys = {q['id'] for q in questions}
                 if not isinstance(record.get('index'),int) or not 0 <= record['index'] < len(questions):
                     raise ValueError('作答题号无效')
-                if not isinstance(record.get('answers'),dict) or any(k not in keys or v not in ('A','B','C','D') for k,v in record['answers'].items()):
+                letters = {q['id']: list('ABCDEF'[:len(q['options'])]) for q in questions}
+                if not isinstance(record.get('answers'),dict) or any(k not in keys or v not in letters[k] for k,v in record['answers'].items()):
                     raise ValueError('作答选项无效')
                 if not isinstance(record.get('elapsed'),(int,float)) or not math.isfinite(record['elapsed']) or record['elapsed'] < 0:
                     raise ValueError('计时记录无效')
@@ -159,7 +168,7 @@ class ReadingBridge(QObject):
 
     @Property('QVariantList', notify=catalogueChanged)
     def importedCatalogue(self):
-        return self._importer.catalogue()
+        return [row for row in self.catalogue if row.get('sourceKind') in {'personal_import', 'user_paste', 'personal_practice'}]
 
     @Property('QVariantList', notify=catalogueChanged)
     def catalogue(self):
@@ -178,6 +187,15 @@ class ReadingBridge(QObject):
     @Property(QObject, constant=True)
     def importer(self):
         return self._importer
+
+    @Property(QObject, constant=True)
+    def paperImporter(self):
+        return self._paper_importer
+
+    def _reload_personal_papers(self):
+        self._papers = {k: p for k, p in self._papers.items() if p.get('source', {}).get('kind') != 'personal_practice'}
+        self._papers.update({p['id']: p for p in self._paper_importer.stored_papers()})
+        self.catalogueChanged.emit()
 
     @Property(QObject, constant=True)
     def intensive(self):
@@ -226,7 +244,7 @@ class ReadingBridge(QObject):
         review = self._stage == 'review'
         question = {k:copy.deepcopy(q[k]) for k in ('id','stem','type','options')}
         if review:
-            question.update(answer=q['answer'], explanation=q['explanation'], evidence=q.get('evidence',[]))
+            question.update(answer=q['answer'], explanation=q['explanation'], evidence=q.get('evidence',[]), answerSource=q.get('answer_source', ''))
         return dict(stage=self._stage, id=a['id'], paperId=paper['id'], title=paper['title'], language=paper['language'], source=paper['source']['label'],
             body=paper['body'], paragraphs=paper['body'].split('\n\n'), index=a['index'], total=len(paper['questions']),
             question=question, selected=a['answers'].get(q['id'],''), answered=len(a['answers']), elapsed=int(self._elapsed()),
@@ -276,7 +294,8 @@ class ReadingBridge(QObject):
 
     @Slot(str)
     def answer(self, letter):
-        if self._stage != 'exercise' or self._running_since is None or letter not in ('A','B','C','D'):
+        if (self._stage != 'exercise' or self._running_since is None
+                or letter not in list('ABCDEF'[:len(self._active['paper']['questions'][self._active['index']]['options'])])):
             return
         self._active['answers'][self._active['paper']['questions'][self._active['index']]['id']] = letter
         self._active['activity_at'] = self._stamp()

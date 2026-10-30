@@ -30,6 +30,10 @@ class DataSafetyBridge(QObject):
     def status(self):
         return self._status
 
+    @Property(bool, notify=changed)
+    def busy(self):
+        return self._automatic_running
+
     @Property('QVariantList', notify=changed)
     def snapshots(self):
         rows = []
@@ -86,14 +90,23 @@ class DataSafetyBridge(QObject):
 
     @Slot()
     def automaticBackup(self):
+        self._start_backup(self.store.daily_snapshot, '当日备份已就绪（保留最近 14 份日备份、8 份周备份）。')
+
+    @Slot()
+    def backupAsync(self):
+        self._start_backup(self.store.snapshot, '备份已创建并校验。')
+
+    def _start_backup(self, operation, success):
         if self._automatic_running:
             return
         self._automatic_running = True
+        self._status = '正在备份学习记录…'
+        self.changed.emit()
 
         def run():
             try:
-                self.store.daily_snapshot()
-                status = '当日备份已就绪（保留最近 14 份自动备份）。'
+                operation()
+                status = success
             except Exception as exc:
                 status = '操作失败：' + str(exc)
             self._automaticFinished.emit(status)

@@ -380,12 +380,12 @@ class WritingBridge(QObject):
         self._materials: list[dict] = []
         try:
             saved_favorites = json.loads(FAVORITES.read_text(encoding="utf-8"))
-            self._favorites = saved_favorites.get("items", []) if isinstance(saved_favorites, dict) and isinstance(saved_favorites.get("items", []), list) else []
+            self._favorites = [item for item in saved_favorites.get('items', []) if isinstance(item, dict)] if isinstance(saved_favorites, dict) and isinstance(saved_favorites.get('items'), list) else []
         except (OSError, ValueError):
             self._favorites = []
         try:
             saved_library = json.loads(MATERIAL_LIBRARY.read_text(encoding="utf-8"))
-            self._library = saved_library.get("items", []) if isinstance(saved_library, dict) and isinstance(saved_library.get("items", []), list) else []
+            self._library = [item for item in saved_library.get('items', []) if isinstance(item, dict)] if isinstance(saved_library, dict) and isinstance(saved_library.get('items'), list) else []
         except (OSError, ValueError):
             self._library = []
         # Older library records had no essay owner. Keep them accessible in the
@@ -489,7 +489,7 @@ class WritingBridge(QObject):
                 draft = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(draft, dict) and draft.get("task_id"):
                     attempts.setdefault(draft["task_id"], []).append(draft)
-            except (OSError, ValueError):
+            except (OSError, ValueError, AttributeError, TypeError):
                 continue
         rows = []
         for task in self._tasks:
@@ -528,7 +528,8 @@ class WritingBridge(QObject):
             if candidates:
                 self.openDraft(str(max(candidates)[2]))
                 return
-        self.newDraft("en")
+        if not self.newDraft("en"):
+            return
         self._draft.update({"title": task["set_title"] + " · " + task["title"],
                             "writing_mode": task["kind"], "topic": task["prompt"],
                             "topic_source": task["review_status"], "task_id": task["id"],
@@ -536,16 +537,28 @@ class WritingBridge(QObject):
                             "task_prompt": task["prompt"], "task_source": task["source"],
                             "task_limit": task["limit_seconds"], "task_elapsed": 0.0,
                             "task_state": "ready", "attempt_id": self._file.stem})
-        atomic_json(self._file, self._draft)
+        self._persist_task()
         self.refresh()
         self.changed.emit()
         self.topicReady.emit()
 
-    def _persist_task(self) -> None:
+    def _persist_task(self) -> bool:
         if self._file:
             self._draft["updated"] = now()
-            atomic_json(self._file, self._draft)
+            try:
+                atomic_json(self._file, self._draft)
+            except OSError as exc:
+                self._clock.stop()
+                self._clock_started = None
+                if self._draft.get('task_state') == 'running':
+                    self._draft['task_state'] = 'paused'
+                self._save_error = f'保存失败，内容仍在编辑器中，请重试：{exc}'
+                self._status = self._save_error
+                self.changed.emit()
+                return False
+        self._save_error = ''
         self.changed.emit()
+        return True
 
     @Slot(str)
     def updateTaskText(self, text: str) -> None:
@@ -595,8 +608,9 @@ class WritingBridge(QObject):
             self._draft["submission"] = {"text": self._draft.get("text", ""),
                                          "elapsed": self._draft.get("task_elapsed", 0),
                                          "reason": reason, "at": now()}
-        self._status = "时间到，原稿已保存。" if reason == "timeout" else "作答结束，原稿已保存。"
-        self._persist_task()
+        if self._persist_task():
+            self._status = "时间到，原稿已保存。" if reason == "timeout" else "作答结束，原稿已保存。"
+            self.changed.emit()
         self.refresh()
 
     @Slot()
@@ -656,7 +670,10 @@ class WritingBridge(QObject):
         if width == self._side_width:
             return
         self._side_width = width
-        atomic_json(WRITING_LAYOUT, {"side_width": width})
+        try:
+            atomic_json(WRITING_LAYOUT, {"side_width": width})
+        except OSError as exc:
+            self._status = f'布局保存失败：{exc}'
         self.changed.emit()
 
     @Property("QVariantList", notify=changed)
@@ -677,8 +694,9 @@ class WritingBridge(QObject):
                                "updatedLabel": str(data.get("updated", ""))[:10],
                                 "preview": str(data.get("text", "")).strip().replace("\n", " ")[:90],
                                 "reviewed": bool(data.get("review")),
+                                "hasModel": bool(isinstance(data.get("review"), dict) and str(data["review"].get("revisedText") or "").strip()),
                                 "favorite": bool(data.get("favorite", False))})
-            except (OSError, ValueError):
+            except (OSError, ValueError, AttributeError, TypeError):
                 continue
         self._drafts = sorted(drafts, key=lambda item: item["updated"], reverse=True)
         self.draftsChanged.emit()
@@ -693,44 +711,56 @@ class WritingBridge(QObject):
                     linked = by_title[0] if len(by_title) == 1 else None
                 notes.append({**data, "path": str(path), "essayPath": linked["path"] if linked else "",
                               "essayTitle": linked["title"] if linked else data.get("essayTitle", "")})
-            except (OSError, ValueError):
+            except (OSError, ValueError, AttributeError, TypeError):
                 continue
         self._notes = sorted(notes, key=lambda item: item.get("updated", ""), reverse=True)
         self.notesChanged.emit()
 
-    @Slot(str)
-    def newDraft(self, language: str) -> None:
-        if self._save_error: return
+    @Slot(str, result=bool)
+    def newDraft(self, language: str) -> bool:
+        if self._save_error: return False
         if language not in {"ja", "en"}:
             language = "ja"
         self.pauseTask()
-        self._file = ESSAYS / f"{uuid4().hex}.json"
-        self._draft = {"schema_version": 1, "title": '未命名作文', "language": language,
+        if self._save_error: return False
+        candidate = ESSAYS / f"{uuid4().hex}.json"
+        draft = {"schema_version": 1, "title": '未命名作文', "language": language,
                        "topic": "", "text": "", "targets": [], "writing_mode": "practice",
                        "practice_style": "guided", "topic_source": "custom",
                        "side_open": False,
                        "created": now(), "updated": now()}
+        try:
+            atomic_json(candidate, draft)
+        except OSError as exc:
+            self._status = f'新建失败，当前作文已保留，请重试：{exc}'
+            self.changed.emit()
+            return False
+        self._file, self._draft = candidate, draft
         self._materials = []
         self._status = ""
-        atomic_json(self._file, self._draft)
         self.refresh()
         self.changed.emit()
+        return True
 
     @Slot(str)
     def openDraft(self, path: str) -> None:
         if self._save_error: return
         self.pauseTask()
+        if self._save_error: return
         file = Path(path)
         if file.parent != ESSAYS or not file.is_file():
             self._status = '作文不存在。'
             self.changed.emit()
             return
         try:
-            self._draft = json.loads(file.read_text(encoding="utf-8"))
+            loaded = json.loads(file.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict) or not isinstance(loaded.get('text', ''), str):
+                raise ValueError('作文内容格式无效')
+            self._draft = loaded
             self._file = file
             if self._draft.get("task_state") == "running":
                 self._draft["task_state"] = "paused"
-                atomic_json(file, self._draft)
+                if not self._persist_task(): return
             self._materials = self._draft.get("materials", [])
             self._status = '已打开作文。'
             self.changed.emit()
@@ -778,7 +808,7 @@ class WritingBridge(QObject):
             if not isinstance(values, list):
                 return
             self._draft["targets"] = list(dict.fromkeys(str(value).strip()[:100] for value in values if str(value).strip()))[:30]
-            atomic_json(self._file, self._draft)
+            self._persist_task()
             self.changed.emit()
         except (OSError, ValueError):
             pass
@@ -943,25 +973,36 @@ class WritingBridge(QObject):
         file = Path(path)
         if file.parent != ESSAYS or not file.is_file():
             return
-        data = json.loads(file.read_text(encoding="utf-8"))
-        data["favorite"] = not bool(data.get("favorite", False))
-        atomic_json(file, data)
+        if file == self._file and self._save_error:
+            return
+        try:
+            data = copy.deepcopy(self._draft) if file == self._file else json.loads(file.read_text(encoding='utf-8'))
+            data['favorite'] = not bool(data.get('favorite', False))
+            atomic_json(file, data)
+        except (OSError, ValueError, AttributeError) as exc:
+            self._status = f'收藏保存失败，原文件已保留：{exc}'
+            self.changed.emit()
+            return
         if file == self._file:
             self._draft = data
             self.changed.emit()
         self.refresh()
 
-    @Slot(str)
-    def deleteDraft(self, path: str) -> None:
+    @Slot(str, result=bool)
+    def deleteDraft(self, path: str) -> bool:
         file = Path(path)
         if file.parent != ESSAYS or not file.is_file():
-            return
+            return False
+        if file == self._file:
+            self.pauseTask()
+            if self._save_error or not self.retrySave():
+                return False
         try:
             DataStore(ESSAYS.parent).trash_essay(file)
         except OSError as exc:
             self._status = f'移入回收站失败：{exc}'
             self.changed.emit()
-            return
+            return False
         if file == self._file:
             self._file = None
             self._draft = {}
@@ -969,6 +1010,7 @@ class WritingBridge(QObject):
             self.changed.emit()
         self._status = '作文已移入回收站，可在设置中恢复。'
         self.refresh()
+        return True
 
     @Slot(str, str)
     def addCustomMaterials(self, text: str, kind: str) -> None:
@@ -982,7 +1024,7 @@ class WritingBridge(QObject):
             self._materials.extend({"expression": term, "kind": "grammar", "meaning": "", "example": ""}
                                    for term in terms if term.casefold() not in existing)
             self._draft["materials"] = self._materials
-            atomic_json(self._file, self._draft)
+            if not self._persist_task(): return
             self._status = f'已添加 {len(terms)} 项语法卡。'
             self.changed.emit()
             return
@@ -1004,7 +1046,7 @@ class WritingBridge(QObject):
         if self._draft.get("language") == "ja" and mode != "practice":
             return
         self._draft["writing_mode"] = mode
-        atomic_json(self._file, self._draft)
+        self._persist_task()
         self.changed.emit()
 
     @Slot(str)
@@ -1014,7 +1056,7 @@ class WritingBridge(QObject):
         if not self._file or style not in {"guided", "timed"}:
             return
         self._draft["practice_style"] = style
-        atomic_json(self._file, self._draft)
+        self._persist_task()
         self.changed.emit()
 
     @Slot(bool)
@@ -1022,7 +1064,7 @@ class WritingBridge(QObject):
         if not self._file or self._draft.get("side_open", False) == opened:
             return
         self._draft["side_open"] = opened
-        atomic_json(self._file, self._draft)
+        self._persist_task()
         self.changed.emit()
 
     @Slot(str, str)
@@ -1035,7 +1077,7 @@ class WritingBridge(QObject):
         self._draft["topic"] = topic
         self._draft["topic_source"] = "ets_user_entry"
         self._draft["topic_url"] = source_url.strip()[:500]
-        atomic_json(self._file, self._draft)
+        if not self._persist_task(): return
         self._status = '已收录从 ETS 练习材料录入的题目。'
         self.changed.emit()
         self.topicReady.emit()
@@ -1111,7 +1153,14 @@ class WritingBridge(QObject):
         else:
             draft["review"] = data
             self._status = '批改完成；原稿已保留。'
-        atomic_json(target, draft)
+        try:
+            atomic_json(target, draft)
+        except OSError as exc:
+            self._status = f'结果保存失败，原文件已保留：{exc}'
+            if current:
+                self._save_error = self._status
+            self.changed.emit()
+            return
         self.refresh()
         self.changed.emit()
         if current and kind == "review":
@@ -1147,7 +1196,12 @@ class WritingBridge(QObject):
                      "text": text.strip(), "sourceQuote": source_quote.strip(),
                      "essay_id": Path(essay["path"]).stem if essay else "",
                      "essayTitle": essay["title"] if essay else legacy_title, "updated": now()})
-        atomic_json(note_file, note)
+        try:
+            atomic_json(note_file, note)
+        except OSError as exc:
+            self._status = f'笔记保存失败，内容仍在编辑器中：{exc}'
+            self.changed.emit()
+            return False
         self._status = '笔记已保存。'
         self.refresh()
         self.changed.emit()

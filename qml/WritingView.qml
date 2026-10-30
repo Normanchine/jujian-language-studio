@@ -13,6 +13,8 @@ Item {
     property bool libraryMode: true
     property bool librarySideOpen: false
     property bool reviewMode: false
+    property bool comparisonMode: false
+    readonly property bool hasModelEssay: writer.current.language === "en" && !!String((writer.current.review || {}).revisedText || "").trim()
     property bool reviewDrawerOpen: false
     property bool sideOpen: false
     property int sideWidth: writer.sideWidth
@@ -36,6 +38,7 @@ Item {
     property string selectionQuote: ""
     onLibraryModeChanged: selectionNote.close()
     onReviewModeChanged: selectionNote.close()
+    onComparisonModeChanged: selectionNote.close()
     onNotesModeChanged: selectionNote.close()
     function clearSelectionNote(source) {
         if (source === selectionOwner) selectionNote.close()
@@ -63,25 +66,30 @@ Item {
             onClicked: {
                 var quote = view.selectionQuote
                 selectionNote.close()
-                view.saveNow()
+                if (!view.saveNow()) return;
                 notePopup.newNote(writer.currentPath, writer.current.language, quote)
             }
         }
     }
 
     function saveNow() {
-        if (writer.currentPath && !reviewMode && !libraryMode && !notesMode)
+        if (writer.currentPath && !reviewMode && !libraryMode && !notesMode && !comparisonMode)
             return writer.saveDraft(titleField.text, topicField.text, draftText.text)
         return !writer.saveError
     }
-    function showLibrary() { if (!saveNow()) return; notesMode = false; writer.pauseTask(); reviewMode = false; libraryMode = true; librarySideOpen = false }
+    function showLibrary() { if (!saveNow()) return; writer.pauseTask(); if (writer.saveError) return; comparisonMode=false; notesMode = false; reviewMode = false; libraryMode = true; librarySideOpen = false }
+    function openComparison() {
+        if (!hasModelEssay || !saveNow()) return;
+        selectionNote.close(); reviewDrawerOpen=false; comparisonMode=true;
+    }
     function showMaterials() {
         if (libraryMode || !writer.currentPath) librarySideOpen = true
         else { sideMode = "library"; setSide(true) }
     }
     function startDraft(language, mode) {
         if (!saveNow()) return;
-        writer.newDraft(language)
+        if (!writer.newDraft(language)) return;
+        comparisonMode=false
         if (mode !== "practice") writer.setMode(mode)
         notesMode = false; libraryMode = false; librarySideOpen = false; reviewMode = false
         elapsedSeconds = 0
@@ -89,6 +97,7 @@ Item {
     function openDraft(path) {
         if (!saveNow()) return;
         writer.openDraft(path)
+        comparisonMode=false
         notesMode = false; libraryMode = false; librarySideOpen = false; reviewMode = false
         elapsedSeconds = 0
     }
@@ -139,11 +148,12 @@ Item {
                 view.topicEditing = false
                 view.sideOpen = !!writer.current.side_open
                 view.reviewMode = false
+                view.comparisonMode = false
                 view.activeIssue = -1
             }
         }
         function onTopicReady() { topicField.text = writer.current.topic || ""; view.topicEditing = false }
-        function onReviewReady() { view.reviewWaiting = false; view.reviewMode = true; view.reviewDrawerOpen = false
+        function onReviewReady() { view.comparisonMode = false; view.reviewWaiting = false; view.reviewMode = true; view.reviewDrawerOpen = false
             view.activeIssue = -1; view.reviewTab = "issues" }
     }
     Connections {
@@ -163,7 +173,7 @@ Item {
         id: taskPicker
         parent: Overlay.overlay
         onSelected: function(taskId, fresh) {
-            view.saveNow()
+            if (!view.saveNow()) return;
             writer.openWritingTask(taskId, fresh)
             view.loadedPath = ""
             writer.changed()
@@ -214,12 +224,12 @@ Item {
                 Item { Layout.fillWidth: true }
                 AppButton { text: "取消"; onClicked: deleteConfirm.close() }
                 AppButton { text: "删除作文"; primary: true; destructive: true
-                    onClicked: { writer.deleteDraft(view.pendingDelete); deleteConfirm.close() } }
+                    onClicked: { if (!view.saveNow()) return; if (writer.deleteDraft(view.pendingDelete)) deleteConfirm.close() } }
             }
         }
     }
     function captureWritingNote() {
-        saveNow()
+        if (!saveNow()) return;
         var quote = draftText.selectedText || ""
         if (reviewMode && activeIssue >= 0 && writer.reviewIssues[activeIssue])
             quote = writer.reviewIssues[activeIssue].correction || writer.reviewIssues[activeIssue].quote || ""
@@ -318,11 +328,13 @@ Item {
     }
 
     ColumnLayout { anchors.fill: parent; spacing: 12
-        visible: !view.notesMode && !view.libraryMode && !!writer.currentPath
+        visible: !view.notesMode && !view.libraryMode && !view.comparisonMode && !!writer.currentPath
         RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 50; spacing: 8
             AppButton { text: "← 返回作文"; onClicked: view.showLibrary() }
             Text { Layout.fillWidth: true; text: view.reviewMode ? "对照批改" : "写作"
                 color: view.ink; font.pixelSize: 20; font.weight: Font.DemiBold }
+            AppButton { objectName: "writingOpenComparison"; visible: view.hasModelEssay; text: "原稿 / 范文";
+                onClicked: view.openComparison() }
             AppButton { visible: view.reviewMode; text: "继续修改"; primary: true
                 onClicked: { view.reviewMode = false; view.reviewDrawerOpen = false; draftText.forceActiveFocus() } }
             AppButton { visible: view.reviewMode && !body.inlineSide
@@ -461,7 +473,8 @@ Item {
                             onClicked: { if (!view.saveNow()) return; writer.generateTopic() } }
                     }
                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#E9EDE7" }
-                    ScrollView { id: draftScroll; Layout.fillWidth: true; Layout.fillHeight: true; visible: !view.reviewMode
+                    ScrollView { id: draftScroll; objectName:"writingDraftScroll"; Layout.fillWidth: true; Layout.fillHeight: true; visible: !view.reviewMode
+                        contentWidth: availableWidth
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         TextArea { id: draftText; objectName: "writingDraftField"; implicitWidth: 0; width: Math.max(0, draftScroll.availableWidth)
                             wrapMode: TextEdit.Wrap; selectByMouse: true; persistentSelection: true
@@ -496,7 +509,7 @@ Item {
                         Text { text: writer.current.title || "作文批改"; Layout.fillWidth: true; elide: Text.ElideRight
                             color: view.ink; font.pixelSize: 21; font.weight: Font.DemiBold }
                         Text { text: "点击下划线查看对应建议"; color: view.muted; font.pixelSize: 11 }
-                        Flickable { id: essayFlick; onContentYChanged: selectionNote.close(); Layout.fillWidth: true; Layout.fillHeight: true
+                        Flickable { id: essayFlick; objectName:"writingReviewEssayScroll"; onContentYChanged: selectionNote.close(); Layout.fillWidth: true; Layout.fillHeight: true
                             contentWidth: width; contentHeight: paragraphColumn.height + 20; clip: true
                             boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
@@ -519,7 +532,37 @@ Item {
                                         }
                                     }
                                 }
+                                Rectangle {
+                                    objectName: "writingAttachedModelEssay"; visible: view.hasModelEssay
+                                    width: paragraphColumn.width; height: visible ? attachedModelContent.height+32 : 0
+                                    radius: 10; color: settings.palette.page; border.color: settings.palette.selection
+                                    Column { id: attachedModelContent; x:16; y:16; width:parent.width-32; spacing:12
+                                        RowLayout { width:parent.width
+                                            Text { text:"AI 修改后范文"; color:view.themeAccent; font.pixelSize:15; font.weight:Font.DemiBold; Layout.fillWidth:true }
+                                            AppButton { objectName:"writingAttachedModelCompare"; text:"对照阅读"; flat:true; onClicked:view.openComparison() }
+                                        }
+                                        WritingSelectableText {
+                                            objectName:"writingAttachedModelText"; width:parent.width
+                                            text: writer.current.review ? writer.current.review.revisedText || "" : ""
+                                            font.family:"Georgia"; font.pixelSize:18; color:view.ink
+                                            onNoteRequested:function(source){view.showSelectionNote(source)}
+                                            onSelectionCleared:function(source){view.clearSelectionNote(source)}
+                                        }
+                                    }
+                                }
                             }
+                        }
+                    }
+                    Rectangle {
+                        objectName:"writingModelAttachment"; visible:view.hasModelEssay && !view.reviewMode && view.height>=650
+                        Layout.fillWidth:true; implicitHeight:72; radius:9
+                        color:settings.palette.page; border.color:settings.palette.selection
+                        RowLayout { anchors.fill:parent; anchors.margins:12; spacing:12
+                            ColumnLayout { Layout.fillWidth:true; spacing:5
+                                Text { text:"AI 修改后范文"; color:view.themeAccent; font.pixelSize:13; font.weight:Font.DemiBold }
+                                Text { text:"已随作文保存 · 保留批改时的原稿"; color:view.muted; font.pixelSize:11; Layout.fillWidth:true; elide:Text.ElideRight }
+                            }
+                            AppButton { objectName:"writingAttachmentCompare"; text:"对照阅读"; onClicked:view.openComparison() }
                         }
                     }
                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#E9EDE7" }
@@ -530,6 +573,8 @@ Item {
                                 : "自动保存  ·  " + (writer.current.language === "ja" ? draftText.text.trim().length + " 字"
                                   : (draftText.text.trim() ? draftText.text.trim().split(/\s+/).length : 0) + " 词") }
                         AppButton { visible: view.reviewMode; text: "记笔记"; onClicked: view.captureWritingNote() }
+                        AppButton { objectName:"writingCompactModelCompare"; visible:view.hasModelEssay && !view.reviewMode && view.height<650
+                            text:"范文对照"; flat:true; onClicked:view.openComparison() }
                         AppButton { visible: !view.reviewMode; text: "保存草稿"; onClicked: view.saveNow() }
                         AppButton { objectName: "writingReviewSubmit"; visible: !view.reviewMode; text: writer.busy ? "正在批改…" : "提交批改"; primary: true
                             enabled: !writer.busy && draftText.text.trim().length > 0
@@ -678,8 +723,9 @@ Item {
                                     width: parent.width; wrapMode: Text.Wrap
                                     text: "目标表达：" + (writer.current.review ? writer.current.review.targetFeedback || "" : "")
                                     color: "#536359"; font.pixelSize: 12 }
+                                AppButton { visible: view.hasModelEssay; text:"原稿 / 范文对照"; onClicked:view.openComparison() }
                                 Text { visible: !!(writer.current.review && writer.current.review.revisedText)
-                                    text: "参考改写"; color: view.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
+                                    text: "AI 修改后范文"; color: view.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
                                 WritingSelectableText { objectName: "writingAiRevisedText"; visible: !!(writer.current.review && writer.current.review.revisedText)
                                     width: parent.width
                                     text: writer.current.review ? writer.current.review.revisedText || "" : ""
@@ -693,5 +739,14 @@ Item {
                 }
             }
         }
+    }
+    WritingComparison {
+        anchors.fill:parent; visible:view.comparisonMode && !view.libraryMode && !view.notesMode
+        title:writer.current.title || "作文"
+        review:writer.current.review || ({})
+        currentText:writer.current.text || ""
+        onBackRequested:view.comparisonMode=false
+        onNoteRequested:function(source){view.showSelectionNote(source)}
+        onSelectionCleared:function(source){view.clearSelectionNote(source)}
     }
 }

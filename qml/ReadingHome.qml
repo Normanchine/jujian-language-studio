@@ -12,6 +12,7 @@ Item {
     property string route: "hub"
     property string collection: "all"
     property string completionScope: "all"
+    property string readScope: "all"
     property string materialScope: "all"
     property var destinationMemory: ({})
     property string query: ""
@@ -38,6 +39,7 @@ Item {
     property int reviewReturnIndex: 0
     property bool compact: width < 850
     property bool restoring: false
+    property int listUpdateRevision: 0
     property color ink: "#293B32"
     property color muted: "#7B8981"
     property color accent: settings.palette.accent
@@ -93,6 +95,10 @@ Item {
         completionScope = value; filterIndex = 0; collection = "all"; query = "";
         articles.positionViewAtBeginning(); persist();
     }
+    function chooseReadScope(value) {
+        readScope = value;
+        articles.positionViewAtBeginning(); persist();
+    }
     function openCompleted() {
         rememberDestination(); route = "library"; applyState({collection:"all", completion:"done"});
         Qt.callLater(function() { articles.positionViewAtBeginning(); persist(); });
@@ -138,11 +144,29 @@ Item {
     }
     function isFavorite(a) { return favoriteIds[a.id] === undefined ? !!a.demoFavorite : !!favoriteIds[a.id]; }
     function toggleFavorite(a) {
+        var anchor=captureListBeforeEdit();
         var next = Object.assign({}, favoriteIds); next[a.id] = !isFavorite(a); favoriteIds = next; persist();
+        restoreListAfterEdit(anchor);
     }
     function updateRecord(id, changes) {
+        var anchor=captureListBeforeEdit();
         var next = Object.assign({}, readingRecords); next[id] = Object.assign({}, next[id] || {}, changes);
         readingRecords = next; persist();
+        restoreListAfterEdit(anchor);
+    }
+    function captureListBeforeEdit() {
+        return !articleOpen && (route==="library" || route==="favorites")
+            ? Object.assign({language:language,route:route},snapshot()) : null;
+    }
+    function restoreListAfterEdit(anchor) {
+        if (!anchor) return;
+        var revision=++listUpdateRevision;
+        Qt.callLater(function() {
+            if (revision!==home.listUpdateRevision || home.articleOpen || home.language!==anchor.language
+                || home.route!==anchor.route || home.collection!==anchor.collection || home.query!==anchor.query
+                || home.readScope!==anchor.readScope || home.completionScope!==anchor.completion || home.filterIndex!==anchor.filter) return;
+            home.restoreList(anchor);
+        });
     }
     property var groups: {
         var result = [], known = {};
@@ -150,14 +174,17 @@ Item {
             if (!known[a.group]) { known[a.group] = true; result.push(a.group) }
         });
         if (!known['我的文章'] && reading.importer.folders.some(function(f) { return f.language===home.language; })) result.push('我的文章');
+        var sourceOrder=result.slice();
         return result.sort(function(a,b) {
+            if (a===b) return 0;
             if (a==='我的文章') return -1;
             if (b==='我的文章') return 1;
             if (a.indexOf('托福资料 · ')===0 && b.indexOf('托福资料 · ')===0) {
                 var am=a.match(/(\d+)月/),bm=b.match(/(\d+)月/);
-                return (am ? Number(am[1]) : 99)-(bm ? Number(bm[1]) : 99);
+                var monthOrder=(am ? Number(am[1]) : 99)-(bm ? Number(bm[1]) : 99);
+                if (monthOrder) return monthOrder;
             }
-            return 0;
+            return sourceOrder.indexOf(a)-sourceOrder.indexOf(b);
         });
     }
     function sectionIds(group) {
@@ -185,23 +212,27 @@ Item {
         persist();
     }
     property var directory: {
+        var scope = home.completionScope;
+        var material = home.materialScope;
+        var items = home.languageItems;
+        var folded = home.collapsed;
         var result = [];
         groups.forEach(function(g) {
             var seen = {}, sets = [];
-            home.languageItems.filter(function(a) { return a.group === g && home.matchesMaterial(a) }).sort(function(a,b){
+            items.filter(function(a) { return a.group === g && (material==='all' || (material==='practice' ? a.hasQuestions!==false : a.hasQuestions===false)) }).sort(function(a,b){
                 return a.order-b.order || (a.sourceGroup || '').localeCompare(b.sourceGroup || '');
             }).forEach(function(a) {
                 if (seen[a.setId]) return;
                 seen[a.setId] = true;
-                var articles = home.languageItems.filter(function(b) { return b.setId === a.setId && home.matchesMaterial(b) });
+                var articles = items.filter(function(b) { return b.setId === a.setId && (material==='all' || (material==='practice' ? b.hasQuestions!==false : b.hasQuestions===false)) });
                 var questions = articles.filter(function(b) { return b.hasQuestions !== false });
                 var done = questions.filter(function(b) { return b.practice === "done" }).length;
                 var started = done > 0 || questions.some(function(b) { return b.practice === "progress" });
                 var status = !questions.length ? "plain" : done === questions.length ? "done" : started ? "progress" : "new";
-                if (home.completionScope !== "all" && (!questions.length || (home.completionScope === "done" ? done === 0 : status === "done"))) return;
+                if (scope !== "all" && (!questions.length || (scope === "done" ? done === 0 : status === "done"))) return;
                 sets.push({kind:"set", label:a.setTitle, id:a.setId, count:questions.length, articleCount:articles.length,
                            practiceCount:questions.length, intensiveCount:articles.length-questions.length,
-                           sourceGroup:a.sourceKind==='toefl_personal_materials' || a.sourceKind==='personal_import' || a.sourceKind==='user_paste', done:done, status:status,
+                           sourceGroup:a.sourceKind==='toefl_personal_materials' || a.sourceKind==='personal_practice' || a.sourceKind==='personal_import' || a.sourceKind==='user_paste', done:done, status:status,
                            manuallyComplete:home.completedSections[a.setId] === true});
             });
             if (g === '我的文章' && home.materialScope !== 'practice')
@@ -210,7 +241,7 @@ Item {
                 });
             if (!sets.length) return;
             result.push({kind:"group", label:g, id:g, total:sets.length, manuallyComplete:home.groupManuallyComplete(g)});
-            if (!home.collapsed[g]) result = result.concat(sets);
+            if (!folded[g]) result = result.concat(sets);
         }); return result;
     }
     property var results: {
@@ -221,6 +252,8 @@ Item {
             if (home.collection.indexOf('personal-folder-')===0 && a.setId!==home.collection) return false;
             if (!home.matchesMaterial(a)) return false;
             if (!home.matchesCompletion(a)) return false;
+            if (home.readScope === "done" && a.readComplete !== true) return false;
+            if (home.readScope === "unread" && a.readComplete === true) return false;
             if (!needle && home.collection !== "all" && home.collection !== "favorites" && home.collection !== "personal" && home.collection.indexOf('personal-folder-')!==0 && a.setId !== home.collection) return false;
             if (needle && [a.title, a.setTitle, a.group, a.body].join(" ").toLowerCase().indexOf(needle) < 0) return false;
             if (home.filterIndex > 0 && home.filterIndex < 5 && a.hasQuestions === false) return false;
@@ -230,6 +263,8 @@ Item {
             if (home.filterIndex === 4 && !(a.wrong > 0)) return false;
             if (home.filterIndex === 5 && !(a.lastReviewed || a.intensive === "done")) return false;
             if (home.filterIndex === 6 && !(a.practice === "done" && !a.lastReviewed && a.intensive !== "done")) return false;
+            if (home.filterIndex === 8 && a.readComplete !== true) return false;
+            if (home.filterIndex === 9 && a.readComplete === true) return false;
             if (home.filterIndex === 7 && !a.visited) return false;
             return true;
         });
@@ -250,9 +285,10 @@ Item {
     function snapshot() {
         var index = articles.indexAt(1, articles.contentY + 1);
         var item = index >= 0 ? articles.itemAtIndex(index) : null;
-        return {collection:collection, materialScope:materialScope, query:query, completion:completionScope, filter:filterIndex, sort:sortIndex,
+        return {collection:collection, materialScope:materialScope, query:query, completion:completionScope, readScope:readScope, filter:filterIndex, sort:sortIndex,
             collapsed:collapsed, scroll:Math.max(0, articles.contentY - articles.originY),
             topArticle:index >= 0 && results[index] ? results[index].id : "",
+            topIndex:Math.max(0,index),
             topOffset:item ? Math.max(0, articles.contentY-item.y) : 0};
     }
     function persist() {
@@ -262,7 +298,7 @@ Item {
         stateEdited(Object.assign({version:6, language:language, byLanguage:memory, destinations:destinationMemory, favorites:favoriteIds, records:readingRecords, completedSections:completedSections}, snapshot()));
     }
     function choose(id) {
-        collection = id; query = ""; filterIndex = 0; completionScope = 'all'; materialScope = 'all';
+        collection = id; query = ""; filterIndex = 0; completionScope = 'all'; materialScope = 'all'; readScope = 'all';
         sortIndex = id === "personal" || id === "learning" ? 0 : 1;
         articles.positionViewAtBeginning(); persist(); directoryDrawer.close();
     }
@@ -278,11 +314,14 @@ Item {
         collection = ["recent", "learning"].indexOf(state.collection) >= 0 ? "all" : state.collection || "all"; query = state.query || "";
         if (collection==='toefl-reviewed-selection') collection='all';
         filterIndex = state.filter || 0; sortIndex = state.sort === undefined ? 1 : state.sort;
+        readScope = state.readScope || (filterIndex===8 ? "done" : filterIndex===9 ? "unread" : "all");
+        if (filterIndex>=8) filterIndex=0;
         completionScope = state.completion || (route === "library" && exercises.length && !filterIndex && !hasReviewedMaterials ? "unfinished" : "all");
         collapsed = state.collapsed || {};
     }
     function restoreList(state) {
         var index = state.topArticle ? results.findIndex(function(a) { return a.id === state.topArticle }) : -1;
+        if (index < 0 && state.topIndex !== undefined) index = Math.min(results.length-1,state.topIndex);
         if (index < 0 && state.pageStart) index = Math.min(results.length-1, state.pageStart);
         if (index >= 0) {
             articles.positionViewAtIndex(index, ListView.Beginning);
@@ -333,8 +372,9 @@ Item {
         RowLayout {
             Layout.fillWidth: true; spacing: 8
             AppButton { objectName: "readingImportArticle"; text: "＋ 导入文章"; visible: home.route === "library"; onClicked: importDialog.open() }
+            AppButton { objectName: "readingImportPaper"; text: "＋ 导入阅读题"; visible: home.route === "library"; onClicked: paperImportDialog.open() }
             AppButton { objectName: "readingCreateFolder"; text: "＋ 新建文件夹"; visible: home.route === "library"; onClicked: { folderName.text=""; createFolderPopup.open(); } }
-            Text { visible: home.materials.length > 0 && !home.compact; text: home.materials.some(function(a){return a.mock}) ? "设计预览 · 含模拟目录" : home.materials.some(function(a){return a.sourceKind==='toefl_personal_materials'}) ? "已核单选 · 精读正文" : "自编演示材料"; color: home.muted; font.pixelSize: 11 }
+            Text { visible: home.materials.length > 0 && !home.compact; text: home.materials.some(function(a){return a.mock}) ? "设计预览 · 含模拟目录" : home.materials.some(function(a){return a.sourceKind==='toefl_personal_materials'}) ? "已核单选 · 精读正文" : home.materials.some(function(a){return a.sourceKind==='personal_practice'}) ? "个人阅读题 · 本地记录" : "自编演示材料"; color: home.muted; font.pixelSize: 11 }
             Item { Layout.fillWidth: true; visible: !home.compact }
             TextField {
                 id: search; objectName: "readingSearch"; Layout.fillWidth: home.compact
@@ -395,20 +435,31 @@ Item {
                         }
                     }
                     RowLayout {
-                        Layout.fillWidth: true; spacing: 8
-                        Repeater { model: [{label:"全部", value:"all"}, {label:"未完成", value:"unfinished"}, {label:"已完成", value:"done"}]
-                            AppButton { required property var modelData; visible: home.route === "library" && !home.personalScope && home.exercises.length > 0
-                                objectName: "readingCompletion_" + modelData.value; text: modelData.label; implicitWidth: 62
-                                primary: home.completionScope === modelData.value; flat: !primary; onClicked: home.chooseCompletion(modelData.value) }
+                        Layout.fillWidth: true; spacing: home.compact ? 5 : 8
+                        Text { text: "阅读"; color: home.muted; font.pixelSize: 11; Layout.rightMargin: 4 }
+                        Repeater { model: [{label:"全部",value:"all"},{label:"未读完",value:"unread"},{label:"已读完",value:"done"}]
+                            AppButton { required property var modelData
+                                objectName: "readingRead_"+modelData.value; text: modelData.label; implicitWidth: 68
+                                primary: home.readScope===modelData.value; flat: !primary
+                                onClicked: home.chooseReadScope(modelData.value) }
                         }
-                        Text { visible: home.personalScope; Layout.fillWidth: true; text: "搜索范围：我的文章"; color: home.muted; font.pixelSize: 11 }
-                        AppCombo { id: statusFilter; objectName: "readingStatusFilter"; Layout.fillWidth: true; visible: !home.personalScope
-                            model: ["全部状态", "未练习", "练习未完成", "练习已完成", "有错题", "有精读记录", "练习后未复习", "读过的文章"]
-                            currentIndex: home.filterIndex
-                            onActivated: { home.filterIndex = currentIndex; home.completionScope = "all"; articles.positionViewAtBeginning(); home.persist() } }
-                        AppCombo { id: sorting; objectName: "readingSort"; Layout.preferredWidth: 124
+                        Item { Layout.fillWidth: true }
+                        AppCombo { id: sorting; objectName: "readingSort"; Layout.preferredWidth: home.compact ? 112 : 124
                             model: ["最近打开", "来源顺序"]; currentIndex: home.sortIndex
                             onActivated: { home.sortIndex = currentIndex; articles.positionViewAtBeginning(); home.persist() } }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        visible: !home.personalScope
+                        Repeater { model: [{label:"全部练习", value:"all"}, {label:"练习未完成", value:"unfinished"}, {label:"练习已完成", value:"done"}]
+                            AppButton { required property var modelData; visible: home.route === "library" && home.exercises.length > 0 && home.materialScope!=="intensive"
+                                objectName: "readingCompletion_" + modelData.value; text: modelData.label; implicitWidth: home.compact ? 82 : 94
+                                primary: home.completionScope === modelData.value; flat: !primary; onClicked: home.chooseCompletion(modelData.value) }
+                        }
+                        AppCombo { id: statusFilter; objectName: "readingStatusFilter"; Layout.fillWidth: true
+                            model: ["全部记录", "未练习", "练习未完成", "练习已完成", "有错题", "有精读记录", "练习后未复习", "打开过的文章"]
+                            currentIndex: home.filterIndex
+                            onActivated: { home.filterIndex = currentIndex; home.completionScope = "all"; articles.positionViewAtBeginning(); home.persist() } }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: home.line }
                     ListView {
@@ -434,7 +485,12 @@ Item {
                                         Text { text: (entry.modelData.number < 10 ? "0" : "") + entry.modelData.number; color: home.muted; font.pixelSize: 12 }
                                         Text { text: entry.modelData.title; color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold
                                             Layout.fillWidth: true; elide: Text.ElideRight }
-                                        Text { visible: !home.compact; text: entry.modelData.mock ? "模拟条目" : entry.modelData.sourceKind==='toefl_personal_materials' ? (entry.modelData.hasQuestions===false ? "精读正文" : "已核单选") : (entry.modelData.sourceKind==='personal_import' || entry.modelData.sourceKind==='user_paste') ? "个人文章" : "自编演示"; color: home.muted; font.pixelSize: 10 }
+                                        ReadingCompletionCheck {
+                                            objectName: "readingArticleComplete_" + entry.modelData.id
+                                            checked: (home.readingRecords[entry.modelData.id] || {}).readComplete === true
+                                            onClicked: home.updateRecord(entry.modelData.id, {readComplete: !(home.readingRecords[entry.modelData.id] || {}).readComplete})
+                                        }
+                                        Text { visible: !home.compact; text: entry.modelData.mock ? "模拟条目" : entry.modelData.sourceKind==='personal_practice' ? '个人阅读题' : entry.modelData.sourceKind==='toefl_personal_materials' ? (entry.modelData.hasQuestions===false ? "精读正文" : "已核单选") : (entry.modelData.sourceKind==='personal_import' || entry.modelData.sourceKind==='user_paste') ? "个人文章" : "自编演示"; color: home.muted; font.pixelSize: 10 }
                                         AppButton { objectName: "readingFavorite_" + entry.modelData.id; text: home.isFavorite(entry.modelData) ? "★" : "☆"
                                             implicitWidth: 30; implicitHeight: 26; flat: true; onClicked: home.toggleFavorite(entry.modelData) }
                                     }
@@ -454,14 +510,28 @@ Item {
                                             onClicked: home.openArticle(entry.modelData, "intensive") }
                                         AppButton { objectName: "readingManage_" + entry.modelData.id; visible: entry.modelData.sourceKind==='personal_import'; text: "管理"; flat: true
                                             onClicked: {home.managedArticle=entry.modelData; manageArticlePopup.open();} }
+                                        AppButton { objectName: "readingRemovePaper_" + entry.modelData.id; visible: entry.modelData.sourceKind==='personal_practice'; text: "移除"; flat: true
+                                            onClicked: {home.managedArticle=entry.modelData; removePaperPopup.open();} }
                                         }
                                     }
                                 }
                             }
                             Rectangle { anchors.bottom: parent.bottom; width: parent.width - 10; height: 1; color: home.line }
                         }
-                        Text { anchors.centerIn: parent; visible: home.results.length === 0
-                            text: home.collection==='personal' ? (home.query.trim() ? "没有匹配的个人文章" : "还没有个人文章，点击上方“导入文章”添加") : home.collection.indexOf('personal-folder-')===0 ? "文件夹里还没有文章" : home.materials.length === 0 ? "还没有阅读材料" : home.collection === "favorites" ? "还没有收藏的文章" : "没有匹配的材料"; color: home.muted; font.pixelSize: 13 }
+                        Column {
+                            anchors.centerIn: parent; visible: home.results.length === 0
+                            width: Math.min(320,parent.width-32); spacing: 14
+                            Text {
+                                width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
+                                text: home.query.trim() ? "没有匹配的文章，试试其他关键词" : home.readScope!=="all" ? (home.readScope==="done" ? "这里还没有标记为已读完的文章" : "这里没有未读完的文章") : home.collection==='personal' ? "还没有个人文章，点击上方“导入文章”添加" : home.collection.indexOf('personal-folder-')===0 ? "文件夹里还没有文章" : home.materials.length === 0 ? "还没有阅读材料" : home.collection === "favorites" ? "还没有收藏的文章" : "没有匹配的材料"
+                                color: home.muted; font.pixelSize: 13
+                            }
+                            AppButton {
+                                objectName: "readingResetReadScope"; anchors.horizontalCenter: parent.horizontalCenter
+                                visible: home.readScope!=="all"; text: "显示全部阅读状态"; flat: true
+                                onClicked: home.chooseReadScope("all")
+                            }
+                        }
                     }
 
                 }
@@ -728,6 +798,32 @@ Item {
                 home.query = ""; home.filterIndex = 0; home.persist();
                 if (openNow) home.openArticle(article, "intensive");
             });
+        }
+    }
+    ReadingPaperImportDialog {
+        id: paperImportDialog
+        libraryLanguage: home.language
+        onPaperImported: function(paperId) {
+            var article = reading.catalogue.find(function(a) { return a.id === paperId });
+            if (!article) return;
+            home.changeLanguage(article.language); home.openDestination("library");
+            home.collection = "all"; home.materialScope = "practice"; home.readScope = "all";
+            home.completionScope = "all"; home.query = ""; home.filterIndex = 0;
+            home.persist();
+            Qt.callLater(function() { home.openArticle(article, "practice"); });
+        }
+    }
+    Popup {
+        id: removePaperPopup; objectName: "readingRemovePaperPopup"; parent: Overlay.overlay
+        anchors.centerIn: parent; modal: true; focus: true; width: Math.min(440,parent.width-40); padding: 22
+        background: Rectangle { radius: 12; color: settings.palette.surface; border.color: home.line }
+        contentItem: ColumnLayout { spacing: 16
+            Text { text: "移除这篇阅读题？"; font.pixelSize: 18; color: home.ink }
+            Text { text: "「" + (home.managedArticle.title || "") + "」将从材料库隐藏。原文件、题目快照和作答记录保留，重新导入相同内容可继续。"; wrapMode: Text.Wrap; Layout.fillWidth: true; font.pixelSize: 13; color: home.muted }
+            RowLayout { Layout.alignment: Qt.AlignRight
+                AppButton { text: "取消"; flat: true; onClicked: removePaperPopup.close() }
+                AppButton { text: "移除"; primary: true; onClicked: { if (reading.paperImporter.remove(home.managedArticle.id)) removePaperPopup.close(); else { home.practiceError=reading.paperImporter.view.error;practiceNotice.open(); } } }
+            }
         }
     }
 }

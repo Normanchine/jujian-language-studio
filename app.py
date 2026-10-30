@@ -54,6 +54,9 @@ def use_windows_window_effects(window) -> None:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--youtube-check":
+        from youtube_check import main as youtube_main
+        return youtube_main()
     if len(sys.argv) > 1 and sys.argv[1] == "--release-check":
         from release_check import main as check_main
         return check_main()
@@ -66,7 +69,7 @@ def main() -> int:
     # The bundled Qt multimedia FFmpeg backend is preferred for local media.
     os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
-    from PySide6.QtCore import QUrl, QTimer, QLockFile
+    from PySide6.QtCore import QUrl, QTimer
     from PySide6.QtGui import QIcon
     import PySide6.QtMultimedia
     from PySide6.QtQml import QQmlApplicationEngine
@@ -80,15 +83,9 @@ def main() -> int:
     milestones = {"imports_seconds": round(perf_counter() - STARTED, 3)}
     app = QApplication(sys.argv)
     from core.paths import DATA
-    from core.storage import DataStore
-    DATA.parent.mkdir(parents=True, exist_ok=True)
-    data_lock = QLockFile(str(DATA.with_name(DATA.name + '.lock')))
-    data_lock.setStaleLockTime(0)
-    if not data_lock.tryLock(0):
-        QMessageBox.warning(None, '句间', '此数据目录已由另一个句间进程使用：\n' + str(DATA))
-        return 1
+    from core.session import open_data_session
     try:
-        DataStore(DATA).apply_pending()
+        data_lock = open_data_session(DATA)
     except Exception as exc:
         QMessageBox.critical(None, '数据恢复未完成', str(exc) + '\n原记录和恢复材料已保留；请检查备份目录。')
         return 1
@@ -97,16 +94,18 @@ def main() -> int:
     app.setOrganizationName("LocalStudy")
     app.setWindowIcon(QIcon(str(ASSETS / "assets" / "jujian.png")))
     bridge = StudyBridge()
-    downloads = DownloadBridge()
     settings = SettingsBridge()
+    downloads = DownloadBridge(settings)
     writer = WritingBridge()
     reading = ReadingBridge()
     milestones["bridges_ready_seconds"] = round(perf_counter() - STARTED, 3)
     settings.dataSafety.essaysRestored.connect(writer.refresh)
     QTimer.singleShot(1500, settings.dataSafety.automaticBackup)
     app.aboutToQuit.connect(reading.leave)
+    app.aboutToQuit.connect(reading.paperImporter.close)
     app.aboutToQuit.connect(bridge.close)
     app.aboutToQuit.connect(writer.pauseTask)
+    app.aboutToQuit.connect(downloads.close)
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("study", bridge)
     engine.rootContext().setContextProperty("downloads", downloads)

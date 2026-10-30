@@ -125,6 +125,7 @@ Item {
                         background: Rectangle { radius: 7; color: "#F8FAF8"; border.color: "#DEE4DE" } }
                     AppButton { text: "选择目录"; onClicked: folderPicker.open() }
                 }
+                DownloadNetworkSettings { width: parent.width }
                 Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
                 Text { text: "模型"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D" }
                 Text { text: "本地使用 Ollama；选择云端时，对应任务的文本会发送到所填接口。"

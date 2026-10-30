@@ -56,6 +56,8 @@ Item {
     Shortcut { sequence: "B"; enabled: practice.visible && !practice.review && !practice.session.paused && !submitDialog.visible; onActivated: reading.answer("B") }
     Shortcut { sequence: "C"; enabled: practice.visible && !practice.review && !practice.session.paused && !submitDialog.visible; onActivated: reading.answer("C") }
     Shortcut { sequence: "D"; enabled: practice.visible && !practice.review && !practice.session.paused && !submitDialog.visible; onActivated: reading.answer("D") }
+    Shortcut { sequence: "E"; enabled: practice.visible && !practice.review && !practice.session.paused && !submitDialog.visible; onActivated: reading.answer("E") }
+    Shortcut { sequence: "F"; enabled: practice.visible && !practice.review && !practice.session.paused && !submitDialog.visible; onActivated: reading.answer("F") }
     ColumnLayout {
         anchors.fill: parent; spacing: 12
         RowLayout {
@@ -146,7 +148,7 @@ Item {
                                 font.family: session.language === "ja" ? "Yu Gothic UI" : "Georgia"; font.pixelSize: 19; lineHeight: 1.25; color: practice.ink }
                             Repeater { model: practice.question.options || []
                                 ListeningOption { required property string modelData; required property int index
-                                    objectName: "readingOption_"+letter; Layout.fillWidth: true; text: modelData; letter: "ABCD"[index]
+                                    objectName: "readingOption_"+letter; Layout.fillWidth: true; text: modelData; letter: "ABCDEF"[index]
                                     chosen: practice.review ? practice.question.answer===letter : practice.session.selected===letter
                                     enabled: !practice.review && !practice.session.paused; onClicked: reading.answer(letter) }
                             }
@@ -155,6 +157,7 @@ Item {
                                 ColumnLayout { id: explanationColumn; anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 14; y: 14; spacing: 10
                                     Text { text: "你的选择 "+(session.selected || "未答")+"    正确答案 "+(practice.question.answer || ""); color: session.selected===practice.question.answer ? settings.palette.accent : "#AE6556"; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.Wrap }
                                     Text { text: practice.question.explanation || ""; color: practice.ink; font.pixelSize: 13; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                    Text { visible: practice.question.answerSource === "ai"; text: "AI 参考答案，请结合原文核对。"; color: "#AE6556"; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
                                     Repeater { model: practice.question.evidence || []
                                         AppButton { required property var modelData; objectName: "readingEvidence"; text: "定位原文 · 第 "+modelData.paragraph+" 段"; flat: true; onClicked: practice.locate(modelData) }
                                     }

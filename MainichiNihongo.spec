@@ -3,6 +3,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 from pathlib import Path
 import PySide6
 import imageio_ffmpeg
+import deno
 
 pyside_root = Path(PySide6.__file__).resolve().parent
 model_sources = [
@@ -15,15 +16,19 @@ if model_source is None:
 ffmpeg_binaries = [(str(pyside_root / 'plugins' / 'multimedia' / 'ffmpegmediaplugin.dll'), 'PySide6/plugins/multimedia')]
 ffmpeg_binaries += [(str(path), 'PySide6') for path in pyside_root.glob('*.dll') if path.name.startswith(('avcodec-', 'avformat-', 'avutil-', 'swresample-', 'swscale-'))]
 ffmpeg_binaries.append((imageio_ffmpeg.get_ffmpeg_exe(), 'imageio_ffmpeg/binaries'))
+deno_executable = Path(deno.find_deno_bin())
+if not deno_executable.is_file():
+    raise FileNotFoundError('Install requirements.txt before packaging (Deno is required).')
+ffmpeg_binaries.append((str(deno_executable), 'deno'))
 
 
 a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[*ffmpeg_binaries, *collect_dynamic_libs('fugashi')],
-    datas=[('qml', 'qml'), ('assets/jujian.png', 'assets'), ('assets/reading-demo.json', 'assets'), ('assets/writing-demo.json', 'assets'), ('assets/doraemon-reading.png', 'assets'), (str(model_source), 'models'), *collect_data_files('whisper'), *collect_data_files('unidic_lite')],
+    datas=[('qml', 'qml'), ('helpers/mineru_convert.py', 'helpers'), ('assets/jujian.png', 'assets'), ('assets/reading-demo.json', 'assets'), ('assets/writing-demo.json', 'assets'), ('assets/doraemon-reading.png', 'assets'), (str(model_source), 'models'), *collect_data_files('whisper'), *collect_data_files('unidic_lite'), *collect_data_files('yt_dlp_ejs')],
     hiddenimports=['PySide6.QtMultimedia', 'PySide6.QtQuick', 'keyring.backends.Windows',
-                   'fugashi', 'unidic_lite'],
+                   'fugashi', 'unidic_lite', 'yt_dlp_ejs'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

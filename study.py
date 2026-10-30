@@ -26,7 +26,7 @@ from linguistics import display_tokens
 
 
 from core.paths import ROOT, ASSETS, DATA
-from core.storage import atomic_json
+from core.storage import atomic_json, atomic_text
 from core.listening_model import SentenceListModel
 PROJECTS = DATA / "projects"
 LAST = DATA / "last-project.txt"
@@ -202,7 +202,7 @@ class StudyBridge(QObject):
         if not self._project_file:
             return
         atomic_json(self._project_file, self._project, compact=compact)
-        LAST.write_text(str(self._project_file), encoding="utf-8")
+        atomic_text(LAST, str(self._project_file))
 
     @Property("QVariantList", notify=projectsChanged)
     def projects(self) -> list[dict]:
@@ -264,9 +264,7 @@ class StudyBridge(QObject):
         try:
             project = json.loads(project_path.read_text(encoding="utf-8"))
             project["favorite"] = not bool(project.get("favorite", False))
-            temporary = project_path.with_suffix(".json.tmp")
-            temporary.write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(project_path)
+            atomic_json(project_path, project)
             if project_path == self._project_file:
                 self._project["favorite"] = project["favorite"]
             self._status = "已收藏媒体。" if project["favorite"] else "已取消收藏。"
@@ -290,9 +288,7 @@ class StudyBridge(QObject):
         try:
             project = json.loads(project_path.read_text(encoding="utf-8"))
             project["library_language"] = language
-            temporary = project_path.with_suffix(".json.tmp")
-            temporary.write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(project_path)
+            atomic_json(project_path, project)
             if project_path == self._project_file:
                 self._project["library_language"] = language
             self._status = "已归入英语。" if language == "en" else "已归入日语。"
@@ -433,9 +429,7 @@ class StudyBridge(QObject):
                 }
                 if cover and Path(cover).is_file():
                     project["cover_path"] = cover
-                temporary = project_path.with_suffix(".json.tmp")
-                temporary.write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
-                temporary.replace(project_path)
+                atomic_json(project_path, project)
             self.refreshProjects()
             self._status = "下载已加入资料库；可稍后打开并转写。"
         except (OSError, ValueError, av.error.FFmpegError) as exc:
@@ -985,7 +979,7 @@ class StudyBridge(QObject):
                 validated = validate_segments(segments, float(self._project["duration"]), self._project.get("language", "ja"))
                 backup = DATA / "subtitle-backups" / f"{self._project_file.stem}-{datetime.now():%Y%m%d-%H%M%S}.json"
                 backup.parent.mkdir(parents=True, exist_ok=True)
-                backup.write_text(json.dumps(self._project, ensure_ascii=False, indent=2), encoding="utf-8")
+                atomic_json(backup, self._project)
                 self._project["segments"] = validated
                 self._project["listening_segmentation"] = {"version": 1, "audit": audit, "backup": str(backup)}
                 self._active_index = 0

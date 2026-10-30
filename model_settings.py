@@ -42,6 +42,9 @@ THEME_PALETTES = {
 THEMES = set(THEME_PALETTES)
 DEFAULTS = {
     "download_dir": str(Path.home() / "Downloads" / "句间"),
+    "youtube_proxy": "http://127.0.0.1:7897",
+    "clash_controller": "",
+    "youtube_auto_node": False,
     "cloud_endpoint": "",
     "cloud_model": "",
     "translation_backend": "cloud",
@@ -204,6 +207,37 @@ class SettingsBridge(QObject):
         self._status = "设置已保存。"
         self.changed.emit()
         return True
+
+    def clashSecret(self) -> str:
+        try:
+            vault = keyring.get_keyring()
+            if isinstance(vault, WinVaultKeyring):
+                return vault.get_password(KEY_SERVICE, "clash-controller") or ""
+        except Exception:
+            pass
+        return ""
+
+    @Slot(str, str, str, bool, result=bool)
+    def saveDownloadNetwork(self, proxy: str, controller: str, secret: str, automatic: bool) -> bool:
+        from clash_service import validate_loopback
+        try:
+            proxy = validate_loopback(proxy)
+            controller = validate_loopback(controller, empty=True)
+            if secret:
+                vault = keyring.get_keyring()
+                if not isinstance(vault, WinVaultKeyring):
+                    raise ValueError("Windows 凭据管理器不可用，未保存控制密钥。")
+                vault.set_password(KEY_SERVICE, "clash-controller", secret.strip())
+            elif controller != self._data["clash_controller"]:
+                vault = keyring.get_keyring()
+                if isinstance(vault, WinVaultKeyring) and vault.get_password(KEY_SERVICE, "clash-controller"):
+                    vault.delete_password(KEY_SERVICE, "clash-controller")
+            return self._save_preferences({"youtube_proxy": proxy, "clash_controller": controller,
+                                           "youtube_auto_node": automatic})
+        except Exception as exc:
+            self._status = f"代理设置未保存：{exc}"
+            self.changed.emit()
+            return False
 
     @Slot(str, str, str, str, str, result=bool)
     def saveShortcuts(self, previous: str, following: str, play: str, loop: str, replay: str = "Ctrl+R") -> bool:

@@ -35,7 +35,8 @@ ColumnLayout {
                 }
                 Item { Layout.fillWidth: true }
                 AppButton { objectName: "backupNowButton"; text: "立即备份"; primary: true
-                    onClicked: panel.safety.backup() }
+                    enabled: !panel.safety.busy
+                    onClicked: panel.safety.backupAsync() }
             }
 
             RowLayout {
@@ -47,7 +48,7 @@ ColumnLayout {
                     enabled: model.length > 0
                     displayText: model.length ? currentText : "暂无备份"
                 }
-                AppButton { text: "恢复…"; enabled: backups.currentIndex >= 0 && backups.model.length > 0
+                AppButton { text: "恢复…"; enabled: !panel.safety.busy && backups.currentIndex >= 0 && backups.model.length > 0
                     onClicked: { panel.selectedBackup = panel.safety.snapshots[backups.currentIndex].name; restoreConfirm.open() } }
             }
             Text {

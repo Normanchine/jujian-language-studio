@@ -21,6 +21,7 @@ Rectangle {
         Text { visible: !card.compact; width: parent.width; elide: Text.ElideRight
             text: (card.entry.language === "ja" ? "日语" : "英语") + " · " + card.entry.updatedLabel
                   + (card.entry.reviewed ? " · 已有批改" : " · 待批改")
+                  + (card.entry.hasModel ? " · 有范文" : "")
             color: "#89958C"; font.pixelSize: 11 }
     }
     Row { visible: !card.compact; anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 1

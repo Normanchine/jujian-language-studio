@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "ReadingPosition.js" as ReadingPosition
 
 Item {
     id: page
@@ -24,6 +25,7 @@ Item {
     property var expandedTranslations: ({})
     property bool allTranslations: false
     property bool restoring: false
+    property int positionRevision: 0
     signal wordChosen(int paragraph,string wordId)
     signal wordRemoved(int paragraph,string wordId)
 
@@ -90,6 +92,7 @@ Item {
     }
     function isSaved(kind,paragraph,start,end) {return !!saved.currentIds[kind+":"+paragraph+":"+start+":"+end];}
     function focusFavorite(item) {
+        ++positionRevision; restoring=false;
         passage.positionViewAtIndex(item.paragraph,ListView.Center);
         Qt.callLater(function() {
             var block=passage.itemAtIndex(item.paragraph);
@@ -127,17 +130,14 @@ Item {
     }
     function savePosition() {
         if (restoring) return;
-        var index=passage.indexAt(10,passage.contentY+10);
-        reader.bookmarkEdited({position:Math.max(0,passage.contentY-passage.originY),readParagraph:Math.max(0,index)+1,
-            paragraphCount:paragraphs.length,visited:Date.now()});
+        reader.bookmarkEdited(ReadingPosition.capture(passage, paragraphs));
     }
     function restorePosition() {
         restoring=true;selectedWords=({});activeWordId="";expandedTranslations=({});allTranslations=false;
-        Qt.callLater(function() {
-            passage.forceLayout();
-            passage.contentY=passage.originY+Math.max(0,Math.min(reader.record.position || 0,passage.contentHeight-passage.height));
-            restoring=false;
-        });
+        var revision=++positionRevision;
+        ReadingPosition.restore(passage, Object.assign({},reader.record), paragraphs,
+            function() {return page.positionRevision===revision;},
+            function() {page.restoring=false;});
     }
     Component.onCompleted: restorePosition()
     onArticleChanged: restorePosition()
@@ -152,13 +152,18 @@ Item {
                 onClicked: {reader.savePosition();reader.backRequested();} }
             Text {text: "阅读  /  英语精读";font.pixelSize: 12;color: page.muted}
             Item { Layout.fillWidth: true }
+            ReadingCompletionCheck {
+                objectName: "readingArticleComplete"
+                checked: reader.record.readComplete === true
+                onClicked: reader.bookmarkEdited({readComplete: !reader.record.readComplete})
+            }
             AppButton { objectName: "englishOpenSaved";text: "词句收藏";flat: true;onClicked: {reader.savePosition();reader.studyFavoritesRequested();} }
             ToolButton {objectName: "readingArticleFavorite";text: reader.favorite ? "★" : "☆";implicitWidth: 32;implicitHeight: 34;font.pixelSize: 21
                 Accessible.name: reader.favorite ? "取消收藏文章" : "收藏文章"
                 contentItem: Text {text: parent.text;font.pixelSize: 21;color: settings.palette.accent;horizontalAlignment: Text.AlignHCenter;verticalAlignment: Text.AlignVCenter}
                 background: Rectangle {radius: 6;color: parent.hovered ? settings.palette.selection : "transparent"}
                 ToolTip.visible: hovered;ToolTip.text: reader.favorite ? "取消收藏文章" : "收藏整篇文章";onClicked: reader.favoriteRequested() }
-            AppButton { objectName: "readingEndReview";text: "完成阅读";flat: true;
+            AppButton { objectName: "readingEndReview";text: "结束阅读";flat: true;
                 onClicked: {reader.savePosition();reader.bookmarkEdited({lastReviewed:Date.now(),reviewCount:(reader.record.reviewCount || 0)+1});reader.backRequested();} }
         }
         Text { visible: page.vocabulary.busy;text: "正在标注第 "+(page.vocabulary.active+1)+" / "+page.paragraphs.length+" 段…";
@@ -204,6 +209,7 @@ Item {
                     required property string modelData
                     required property int index
                     property alias sourceEditor: paragraphText
+                    property real bookmarkHeight: paragraphText.height
                     width: passage.width-10;spacing: 10
                     property var translation: page.assistance.translations[index] || ({text:"",status:""})
                     property var englishPage: page

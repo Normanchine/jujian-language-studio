@@ -1,24 +1,71 @@
-"""Inspect and download single Bilibili videos and public Xiaoyuzhou episodes."""
+"""Inspect/download single videos with explicit per-site proxy routing."""
 
 from __future__ import annotations
 
 import re
 import json
+import base64
+import shutil
+import sys
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, ProxyHandler
 
 from PySide6.QtCore import QObject, Property, QThread, QUrl, Signal, Slot
 
 from model_settings import read_settings
+from clash_service import ClashBridge, ClashClient, PORT, validate_loopback
+
+
+def is_youtube_url(value: str) -> bool:
+    try:
+        url = urlparse(value.strip())
+        if (url.scheme != "https" or url.username or url.password or url.port is not None
+                or url.hostname not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}):
+            return False
+        from urllib.parse import parse_qs
+        if url.hostname == "youtu.be":
+            video_id = url.path.strip("/")
+        elif url.path == "/watch":
+            video_id = parse_qs(url.query).get("v", [""])[0]
+        else:
+            match = re.fullmatch(r"/(?:shorts|live|embed)/([\w-]{11})/?", url.path)
+            video_id = match[1] if match else ""
+        return bool(re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id))
+    except ValueError:
+        return False
+
+
+def media_opener(proxy: str = ""):
+    return build_opener(ProxyHandler({"http": proxy, "https": proxy} if proxy else {}))
+
+
+def deno_path() -> str:
+    from core.paths import ASSETS
+    candidates = [ASSETS / "deno" / "deno.exe", Path(sys.executable).parent / "deno.exe",
+                  Path(sys.prefix) / "Lib" / "site-packages" / "deno" / "deno.exe"]
+    try:
+        import deno
+        candidates += list(Path(deno.__file__).parent.rglob("deno.exe"))
+    except ImportError:
+        pass
+    return next((str(p) for p in candidates if p.is_file()), shutil.which("deno") or "")
+
+
+def is_connection_error(detail: str) -> bool:
+    text = detail.lower()
+    if any(s in text for s in ("sign in", "not a bot", "private video", "not available", "http error 403", "http error 429")):
+        return False
+    return any(s in text for s in ("timed out", "timeout", "connection reset", "connection refused",
+                                  "unable to connect", "proxyerror", "remote end closed", "unexpected_eof"))
 
 
 def allowed_url(value: str) -> bool:
     url = urlparse(value.strip())
     return url.scheme == "https" and (url.hostname in {
         "www.bilibili.com", "bilibili.com", "m.bilibili.com", "b23.tv",
-    } or is_xiaoyuzhou_url(value))
+    } or is_xiaoyuzhou_url(value) or is_youtube_url(value))
 
 
 def is_xiaoyuzhou_url(value: str) -> bool:
@@ -72,7 +119,7 @@ def inspect_xiaoyuzhou(url: str) -> dict:
     parsed = urlparse(url)
     canonical = "https://www.xiaoyuzhoufm.com" + parsed.path
     request = Request(canonical, headers={"User-Agent": "Mozilla/5.0"})
-    with urlopen(request, timeout=20) as response:
+    with media_opener().open(request, timeout=20) as response:
         page = response.read(4_000_001)
     if len(page) > 4_000_000:
         raise ValueError("单集网页过大，无法解析。")
@@ -128,11 +175,64 @@ class DownloadJob(QThread):
     completed = Signal(str, str, str, str)
     progressChanged = Signal(float)
     failed = Signal(str)
+    message = Signal(str)
 
-    def __init__(self, url: str, mode: str, option: dict | None = None, name: str = "") -> None:
+    def __init__(self, url: str, mode: str, option: dict | None = None, name: str = "", settings=None, secret="") -> None:
         super().__init__()
         self.url, self.mode, self.option, self.name = url, mode, option, name
         self.cancel_requested = False
+        self.settings, self.secret = settings, secret
+        self._proxy = ""
+        self._controller = None
+        self._candidates = []
+
+    def _check_cancel(self):
+        if self.cancel_requested:
+            raise RuntimeError("下载已取消")
+
+    def _extract(self, options, url, download):
+        import yt_dlp
+        tried = set()
+        if self._controller:
+            tried.add(self._controller.proxies().get("Jujian-YouTube", {}).get("now"))
+        for attempt in range(3):
+            self._check_cancel()
+            try:
+                with yt_dlp.YoutubeDL(options) as client:
+                    return client.extract_info(url, download=download)
+            except Exception as exc:
+                self._check_cancel()
+                if not self._controller or not is_connection_error(str(exc)) or attempt >= 2:
+                    raise
+                if not self._candidates:
+                    self.message.emit("连接超时，正在测试备用节点…")
+                    rows = self._controller.measure(lambda: self.cancel_requested)
+                    self._candidates = [r["name"] for r in rows if r["delay"] and r["name"] not in tried]
+                if not self._candidates:
+                    raise RuntimeError("没有可连接 YouTube 的备用节点，请检查 Clash 后重试。") from None
+                name = self._candidates.pop(0)
+                tried.add(name)
+                self._controller.select(name)
+                self.message.emit(f"已切换备用节点：{name}，正在重试…")
+
+    def _cover(self, url, title=None, folder=None):
+        if not url:
+            return ""
+        try:
+            request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with media_opener(self._proxy).open(request, timeout=10) as response:
+                content_type = response.headers.get_content_type()
+                data = response.read(5_000_001)
+            if not data or len(data) > 5_000_000 or content_type not in {"image/jpeg", "image/png", "image/webp"}:
+                return ""
+            if folder is None:
+                return "data:" + content_type + ";base64," + base64.b64encode(data).decode()
+            extension = {"image/webp": ".webp", "image/png": ".png"}.get(content_type, ".jpg")
+            path = folder / f"{title}.cover{extension}"
+            path.write_bytes(data)
+            return str(path)
+        except (OSError, ValueError):
+            return ""
 
     def _progress(self, value: dict) -> None:
         if self.cancel_requested:
@@ -144,25 +244,57 @@ class DownloadJob(QThread):
 
     def run(self) -> None:
         try:
+            settings = self.settings if self.settings is not None else read_settings()
+            youtube = is_youtube_url(self.url)
+            runtime = ""
+            if youtube:
+                self._proxy = validate_loopback(settings.get("youtube_proxy", "http://127.0.0.1:7897"))
+                runtime = deno_path()
+                if not runtime:
+                    raise ValueError("缺少 YouTube 所需的 Deno 运行时，请重新运行 setup.ps1 或更新安装包。")
+                if settings.get("youtube_auto_node"):
+                    self._controller = ClashClient(settings, self.secret)
+                    self.message.emit("正在测试 YouTube 节点连通性…")
+                    rows = self._controller.measure(lambda: self.cancel_requested,
+                        lambda n, total: self.message.emit(f"正在测试 YouTube 节点 {n}/{total}…"))
+                    self._candidates = [r["name"] for r in rows if r["delay"]]
+                    if not self._candidates:
+                        raise ValueError("没有可连接 YouTube 的节点，请在设置中检查 Clash。")
+                    name = self._candidates.pop(0)
+                    self._controller.select(name)
+                    self._proxy = f"http://127.0.0.1:{PORT}"
+                    self.message.emit(f"使用节点：{name}，正在读取音视频…")
+                else:
+                    # If a dedicated route exists, manual node selection must apply to downloads too.
+                    try:
+                        client = ClashClient(settings, self.secret)
+                        if client.route_ready():
+                            self._proxy = f"http://127.0.0.1:{PORT}"
+                    except ValueError:
+                        pass
             episode = inspect_xiaoyuzhou(self.url) if is_xiaoyuzhou_url(self.url) else None
             if self.cancel_requested:
                 raise RuntimeError("下载已取消")
-            common = {"quiet": True, "no_warnings": True, "noplaylist": True,
-                      "skip_download": self.mode == "inspect", "socket_timeout": 20}
+            common = {"quiet": True, "noprogress": True, "no_warnings": True, "noplaylist": True, "proxy": self._proxy,
+                      "skip_download": self.mode == "inspect", "socket_timeout": 15,
+                      "retries": 2, "fragment_retries": 2, "extractor_retries": 1,
+                      "continuedl": True, "abort_on_unavailable_fragments": True}
+            if runtime:
+                common["js_runtimes"] = {"deno": {"path": runtime}}
             if self.mode == "inspect":
                 if episode:
+                    episode["thumbnail"] = self._cover(episode.get("thumbnail"))
                     self.inspected.emit(episode)
                     return
                 import yt_dlp
-                with yt_dlp.YoutubeDL(common) as client:
-                    info = client.extract_info(self.url, download=False)
+                info = self._extract(common, self.url, False)
                 if info.get("_type") in {"playlist", "multi_video"}:
                     raise ValueError("请使用单个视频或具体分 P 的链接")
                 self.inspected.emit({"title": str(info.get("title") or "未命名视频"),
-                                     "thumbnail": str(info.get("thumbnail") or ""),
+                                     "thumbnail": self._cover(info.get("thumbnail")),
                                      "formats": available_formats(info)})
                 return
-            folder = Path(read_settings()["download_dir"])
+            folder = Path(settings["download_dir"])
             folder.mkdir(parents=True, exist_ok=True)
             title = safe_name(self.name)
             original_title = title
@@ -179,8 +311,8 @@ class DownloadJob(QThread):
                        "progress_hooks": [self._progress],
                        "ffmpeg_location": str(ffmpeg_exe),
                        "merge_output_format": "mp4" if self.option["kind"] == "video" else None}
-            with yt_dlp.YoutubeDL(options) as client:
-                info = client.extract_info(episode["audio_url"] if episode else self.url, download=True)
+            info = self._extract(options, episode["audio_url"] if episode else self.url, True)
+            self._check_cancel()
             if episode:
                 info.update(title=episode["title"], thumbnail=episode["thumbnail"])
             candidates = [path for path in folder.iterdir() if path.is_file() and path.stem == title
@@ -188,21 +320,8 @@ class DownloadJob(QThread):
             if not candidates:
                 raise FileNotFoundError("下载结束，但没有找到成品文件")
             media = max(candidates, key=lambda path: path.stat().st_mtime)
-            cover = ""
-            thumbnail = info.get("thumbnail")
-            if thumbnail:
-                try:
-                    request = Request(thumbnail, headers={"User-Agent": "Mozilla/5.0"})
-                    with urlopen(request, timeout=15) as response:
-                        image = response.read(5_000_000)
-                        content_type = response.headers.get_content_type()
-                    if image:
-                        extension = ".webp" if content_type == "image/webp" else ".png" if content_type == "image/png" else ".jpg"
-                        cover_path = folder / f"{title}.cover{extension}"
-                        cover_path.write_bytes(image)
-                        cover = str(cover_path)
-                except (OSError, ValueError):
-                    pass
+            cover = self._cover(info.get("thumbnail"), title, folder)
+            self._check_cancel()
             self.progressChanged.emit(1.0)
             self.completed.emit(str(media), title, self.url, cover)
         except Exception as exc:
@@ -214,8 +333,13 @@ class DownloadBridge(QObject):
     titleChanged = Signal()
     completed = Signal(str, str, str, str)
 
-    def __init__(self) -> None:
+    def __init__(self, settings=None) -> None:
         super().__init__()
+        if settings is None:
+            from model_settings import SettingsBridge
+            settings = SettingsBridge()
+        self.settings = settings
+        self._network = ClashBridge(settings, self)
         self._job: DownloadJob | None = None
         self._url = ""
         self._title = ""
@@ -225,6 +349,15 @@ class DownloadBridge(QObject):
         self._progress = 0.0
         self._error = False
         self._mode = ""
+
+    @Property(QObject, constant=True)
+    def network(self): return self._network
+
+    def close(self):
+        self.cancel()
+        if self._job and self._job.isRunning():
+            self._job.wait()
+        self._network.close()
 
     @Property(bool, notify=changed)
     def ready(self) -> bool: return bool(self._formats)
@@ -262,25 +395,32 @@ class DownloadBridge(QObject):
         job.completed.connect(self._completed)
         job.progressChanged.connect(self._set_progress)
         job.failed.connect(self._failed)
+        job.message.connect(self._message)
         job.finished.connect(self.changed.emit)
+        if is_youtube_url(job.url):
+            job.finished.connect(self._refresh_network)
         job.start()
         self.changed.emit()
 
+    def _refresh_network(self):
+        if not self._network.busy:
+            self._network.run("refresh", "")
+
     @Slot(str)
     def inspect(self, url: str) -> None:
-        if self.busy:
+        if self.busy or self._network.busy:
             return
         if not allowed_url(url):
             self._formats, self._title, self._thumbnail = [], "", ""
             self.titleChanged.emit()
-            self._status, self._error = "请输入 HTTPS 的 B 站视频或小宇宙公开单集链接。", True
+            self._status, self._error = "请输入 HTTPS 的 YouTube、B 站视频或小宇宙公开单集链接。", True
             self.changed.emit()
             return
         self._url, self._mode = url.strip(), "inspect"
         self._formats, self._title, self._thumbnail = [], "", ""
         self.titleChanged.emit()
         self._status, self._error = "正在读取音视频信息…", False
-        self._launch(DownloadJob(self._url, "inspect"))
+        self._launch(DownloadJob(self._url, "inspect", settings=self.settings.values.copy(), secret=self.settings.clashSecret()))
 
     @Slot()
     def clearPreview(self) -> None:
@@ -293,11 +433,16 @@ class DownloadBridge(QObject):
 
     @Slot(int, str)
     def start(self, index: int, name: str) -> None:
-        if self.busy or not 0 <= index < len(self._formats):
+        if self.busy or self._network.busy or not 0 <= index < len(self._formats):
             return
         self._mode, self._progress = "download", 0.0
         self._status, self._error = "正在下载…", False
-        self._launch(DownloadJob(self._url, "download", self._formats[index], name.strip() or self._title))
+        self._launch(DownloadJob(self._url, "download", self._formats[index], name.strip() or self._title,
+                                 self.settings.values.copy(), self.settings.clashSecret()))
+
+    def _message(self, text):
+        self._status = text
+        self.changed.emit()
 
     @Slot()
     def cancel(self) -> None:
@@ -326,7 +471,13 @@ class DownloadBridge(QObject):
         self.changed.emit()
 
     def _failed(self, detail: str) -> None:
-        if self._mode == "download" and "UNEXPECTED_EOF_WHILE_READING" in detail:
+        if "下载已取消" in detail:
+            self._status, self._error = "下载已取消；可以重新下载。", False
+            self.changed.emit()
+            return
+        if is_youtube_url(self._url) and is_connection_error(detail):
+            self._status = "YouTube 代理连接失败或超时。请检查 Clash、代理端口或切换节点后重试。"
+        elif self._mode == "download" and "UNEXPECTED_EOF_WHILE_READING" in detail:
             self._status = "下载连接意外断开。可重试，或选择同清晰度的另一种编码。"
         else:
             self._status = f"下载失败：{detail}"

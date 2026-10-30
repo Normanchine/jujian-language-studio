@@ -63,6 +63,31 @@ QMetaObject.invokeMethod(window.findChild(QObject, 'saveFailureDialog'), 'close'
 assert not writer.saveError
 assert json.loads(essay.read_text(encoding='utf-8'))['text'] == 'Unsaved text.'
 
+# New-file failure must not replace the current editor or its file identity.
+with patch('writing.atomic_json', side_effect=OSError('new-file disk full')):
+    assert not writer.newDraft('ja')
+    assert writer.currentPath == str(essay)
+    assert writer.current['text'] == 'Unsaved text.'
+
+# A failed save prevents deletion, and a failed recycle keeps editor and disk.
+with patch('writing.atomic_json', side_effect=OSError('save failure')):
+    assert not writer.saveDraft('Regression', 'topic', 'Latest unsaved draft.')
+    assert not writer.deleteDraft(str(essay))
+    assert essay.exists() and writer.current['text'] == 'Latest unsaved draft.'
+assert writer.retrySave()
+with patch('core.storage.DataStore.trash_essay', side_effect=OSError('recycle denied')):
+    assert not writer.deleteDraft(str(essay))
+    assert essay.exists() and writer.currentPath == str(essay)
+    assert writer.current['text'] == 'Latest unsaved draft.'
+
+# Timer writes must pause with an actionable error instead of escaping a Qt slot.
+writer._draft.update(task_id='fixture', task_prompt='topic', task_limit=60, task_elapsed=0, task_state='ready')
+with patch('writing.atomic_json', side_effect=OSError('timer disk full')):
+    writer.startTask()
+    assert writer.saveError and not writer._clock.isActive()
+    assert writer.current['task_state'] == 'paused'
+assert writer.retrySave()
+
 assert settings.dataSafety.backup()
 snapshot = settings.dataSafety.snapshots[0]['name']
 writer.deleteDraft(str(essay))
@@ -79,6 +104,12 @@ for width, height in [(900, 640), (1180, 820), (1600, 1000)]:
     window.setWidth(width); window.setHeight(height)
     app.processEvents()
     assert window.width() == width
+    scroll = window.findChild(QObject, 'settingsFlick')
+    scroll.setProperty('contentY', max(0, scroll.property('contentHeight') - scroll.property('height')))
+    QTest.qWait(200)
+    capture_folder = ROOT / 'release-verification/data-safety-closeout'
+    capture_folder.mkdir(parents=True, exist_ok=True)
+    assert window.grabWindow().save(str(capture_folder / f'settings-{width}x{height}.png'))
 captures = ROOT / 'release-verification' / 'data-safety'
 captures.mkdir(parents=True, exist_ok=True)
 window.setWidth(1180); window.setHeight(820)
@@ -101,6 +132,37 @@ other = WritingBridge()
 assert other.saveMaterial('en', 'vocabulary', 'example', 'context', '') == ''
 assert material_path.read_text(encoding='utf-8') == '{broken'
 assert '失败' in other.status
+
+# A well-formed JSON collection with invalid entries is also kept intact.
+material_path.write_text('{"items":[null]}', encoding='utf-8')
+other = WritingBridge()
+assert other.saveMaterial('en', 'vocabulary', 'example', 'context', '') == ''
+assert material_path.read_text(encoding='utf-8') == '{"items":[null]}'
+
+# The new background manual action keeps the Qt event loop alive on a larger
+# self-authored fixture; record duration and GUI heartbeat gap for review.
+import time
+for i in range(800):
+    fixture = DATA / 'benchmark' / f'{i:04}.json'
+    fixture.parent.mkdir(exist_ok=True)
+    fixture.write_text(json.dumps({'text': 'Self-authored backup benchmark. ' * 120}), encoding='utf-8')
+started = time.perf_counter()
+last = started
+max_gap = 0
+settings.dataSafety.backupAsync()
+while settings.dataSafety.busy and time.perf_counter() - started < 90:
+    app.processEvents()
+    now = time.perf_counter()
+    max_gap = max(max_gap, now - last)
+    last = now
+    # qWait can hold the GIL in this synchronous harness; real app.exec releases
+    # it. Sleep briefly between event pumps so the Python worker can run too.
+    time.sleep(0.005)
+assert not settings.dataSafety.busy and '已创建' in settings.dataSafety.status, settings.dataSafety.status
+performance = {'backup_seconds': round(time.perf_counter() - started, 3),
+               'max_event_loop_gap_seconds': round(max_gap, 3), 'fixture_files': 800}
+assert max_gap < 0.5, performance
+(capture_folder / 'performance.json').write_text(json.dumps(performance, indent=2), encoding='utf-8')
 
 unexpected = [w for w in warnings if 'PlaceholderText: Binding loop' not in w]
 assert not unexpected, unexpected

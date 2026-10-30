@@ -8,11 +8,29 @@ import re
 import shutil
 import threading
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import uuid4
-from zipfile import ZipFile, ZIP_DEFLATED
+from zipfile import ZipFile, ZIP_DEFLATED, BadZipFile
 
 LOCK = threading.RLock()
+
+
+def reject_links(root: Path) -> None:
+    """Never copy or write through Windows reparse points (including junctions)."""
+    import stat
+    for path in [root, *root.rglob('*')]:
+        if path.is_symlink() or (path.exists() and getattr(path.lstat(), 'st_file_attributes', 0)
+                                 & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            raise OSError('数据目录包含链接，请先移出链接：' + str(path))
+
+
+def valid_relative(value: str) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    part = PurePosixPath(value)
+    return (not part.is_absolute() and str(part) == value and all(
+        p not in {'.', '..'} and not p.endswith((' ', '.')) and not PureWindowsPath(p).is_reserved()
+        and not re.search(r'[\\\\:<>"|?*\x00-\x1f]', p) for p in part.parts))
 
 
 def atomic_json(path: Path, value: dict | list, *, compact: bool = False) -> None:
@@ -30,6 +48,8 @@ def atomic_json(path: Path, value: dict | list, *, compact: bool = False) -> Non
                 if isinstance(value, dict):
                     if isinstance(value.get('items'), list) and not isinstance(old.get('items'), list):
                         raise ValueError('invalid items')
+                    if isinstance(old.get('items'), list) and any(not isinstance(item, dict) for item in old['items']):
+                        raise ValueError('invalid collection entry')
                     for key in ('schema_version', 'version', 'schema'):
                         if type(old.get(key)) is int and type(value.get(key)) is int and old[key] > value[key]:
                             raise ValueError('future data version')
@@ -56,6 +76,22 @@ def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def atomic_text(path: Path, value: str) -> None:
+    """Small navigation pointers participate in the same snapshot lock."""
+    path = Path(path)
+    with LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + '.' + uuid4().hex + '.tmp')
+        try:
+            with temporary.open('x', encoding='utf-8') as stream:
+                stream.write(value)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 class DataStore:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
@@ -65,6 +101,10 @@ class DataStore:
 
     def snapshot(self, kind='manual') -> Path:
         with LOCK:
+            if not re.fullmatch(r'[a-zA-Z0-9-]+', kind):
+                raise OSError('备份类型无效')
+            self.root.mkdir(parents=True, exist_ok=True)
+            reject_links(self.root)
             self.backups.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
             target = self.backups / f'{stamp}-{kind}.zip'
@@ -106,16 +146,23 @@ class DataStore:
                 if archive.getinfo('manifest.json').file_size > 4 * 1024 * 1024:
                     raise ValueError('备份清单过大')
                 manifest = json.loads(archive.read('manifest.json'))
-                if manifest.get('format') != 1 or not isinstance(manifest.get('files'), dict):
+                if (not isinstance(manifest, dict) or type(manifest.get('format')) is not int
+                        or manifest['format'] != 1 or not isinstance(manifest.get('files'), dict)
+                        or not isinstance(manifest.get('source'), str) or not manifest['source']):
                     raise ValueError('不支持的备份格式')
                 names = archive.namelist()
                 expected = {'manifest.json'}
                 total = 0
+                normalized = set()
                 for relative, info in manifest['files'].items():
-                    part = PurePosixPath(relative)
-                    if (not relative or part.is_absolute() or '..' in part.parts or '\\' in relative
-                            or ':' in relative or str(part) != relative):
+                    if (not valid_relative(relative) or PurePosixPath(relative).suffix.lower() not in {'.json', '.txt'}
+                            or relative.casefold() in normalized):
                         raise ValueError('备份包含非法路径')
+                    normalized.add(relative.casefold())
+                    if (not isinstance(info, dict) or type(info.get('size')) is not int or info['size'] < 0
+                            or not isinstance(info.get('sha256'), str)
+                            or not re.fullmatch('[0-9a-f]{64}', info['sha256'])):
+                        raise ValueError('备份清单字段无效')
                     name = 'data/' + relative
                     expected.add(name)
                     member = archive.getinfo(name)
@@ -128,12 +175,12 @@ class DataStore:
                 if len(names) != len(set(names)) or set(names) != expected:
                     raise ValueError('备份文件列表不一致')
                 return manifest
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, AttributeError, BadZipFile) as exc:
             raise OSError('备份无效：' + str(exc)) from exc
 
     def schedule_restore(self, name: str):
         path = self.backups / name
-        if path.parent != self.backups or path.suffix != '.zip':
+        if not valid_relative(name) or '/' in name or path.parent != self.backups or path.suffix != '.zip' or path.is_symlink():
             raise OSError('备份路径无效')
         manifest = self.verify(path)
         if Path(manifest['source']).resolve() != self.root:
@@ -144,11 +191,21 @@ class DataStore:
         """Roll back an interrupted directory swap before loading any bridges."""
         if not self.journal.exists():
             return
-        state = json.loads(self.journal.read_text(encoding='utf-8'))
-        old = Path(state['old'])
+        try:
+            state = json.loads(self.journal.read_text(encoding='utf-8'))
+            old = Path(state['old'])
+        except (ValueError, TypeError, KeyError) as exc:
+            raise OSError('恢复日志损坏，已保留所有目录，请检查备份目录') from exc
         if old.parent != self.root.parent or not old.name.startswith(self.root.name + '-before-restore-'):
             raise OSError('恢复日志路径无效')
+        if not self.root.exists() and (state.get('committed') is True or not old.exists()):
+            raise OSError('恢复目录缺失，已停止启动并保留恢复日志')
+        if state.get('committed') is True:
+            self.pending.unlink(missing_ok=True)
+            self.journal.unlink()
+            return
         if old.exists():
+            reject_links(old)
             if self.root.exists():
                 self.root.rename(self.root.with_name(self.root.name + '-interrupted-' + uuid4().hex))
             old.rename(self.root)
@@ -159,8 +216,15 @@ class DataStore:
             self.recover_interrupted()
             if not self.pending.exists():
                 return False
-            request = json.loads(self.pending.read_text(encoding='utf-8'))
-            name = request['name']
+            try:
+                request = json.loads(self.pending.read_text(encoding='utf-8'))
+                name = request['name']
+                if not valid_relative(name) or '/' in name or not name.endswith('.zip'):
+                    raise ValueError('非法备份名称')
+                if not isinstance(request.get('sha256'), str) or not re.fullmatch('[0-9a-f]{64}', request['sha256']):
+                    raise ValueError('非法备份校验值')
+            except (ValueError, KeyError, TypeError) as exc:
+                raise OSError('待恢复记录损坏，原数据未改变') from exc
             path = self.backups / name
             if path.parent != self.backups or digest(path.read_bytes()) != request['sha256']:
                 raise OSError('待恢复备份已变化')
@@ -184,6 +248,7 @@ class DataStore:
             try:
                 self.root.rename(old)
                 stage.rename(self.root)
+                atomic_json(self.journal, {'old': str(old), 'committed': True})
             except OSError:
                 self.recover_interrupted()
                 raise
@@ -199,12 +264,18 @@ class DataStore:
                 raise OSError('作文路径无效')
             entry = self.root / 'trash' / 'essays' / uuid4().hex
             entry.mkdir(parents=True)
-            atomic_json(entry / 'entry.json', {'filename': source.name, 'deleted': datetime.now().isoformat(timespec='seconds')})
-            source.rename(entry / 'content.json')
+            try:
+                atomic_json(entry / 'entry.json', {'filename': source.name, 'deleted': datetime.now().isoformat(timespec='seconds')})
+                source.rename(entry / 'content.json')
+            except OSError:
+                (entry / 'entry.json').unlink(missing_ok=True)
+                entry.rmdir()
+                raise
             return entry.name
 
     def restore_essay(self, entry_id: str):
         with LOCK:
+            reject_links(self.root)
             if not entry_id or any(c not in '0123456789abcdef' for c in entry_id):
                 raise OSError('回收站条目无效')
             entry = self.root / 'trash' / 'essays' / entry_id

@@ -48,7 +48,7 @@ def main():
     bridge = study.StudyBridge()
     settings = model_settings.SettingsBridge()
     writer = writing.WritingBridge()
-    downloads = DownloadBridge()
+    downloads = DownloadBridge(settings)
     from reading import ReadingBridge
     reading = ReadingBridge(data / "reading")
     assert settings.saveShortcuts("Alt+Left", "Alt+Right", "Space", "Ctrl+L")
@@ -65,7 +65,7 @@ def main():
     engine.load(QUrl.fromLocalFile(str(study.ASSETS / "qml/Main.qml")))
     assert engine.rootObjects(), errors
     window = engine.rootObjects()[0]
-    assert window.property("appVersion") == "0.2.6"
+    assert window.property("appVersion") == "0.2.9"
     quick = shiboken6.wrapInstance(shiboken6.getCppPointer(window)[0], QQuickWindow)
     player = window.findChild(QMediaPlayer, "mediaPlayer")
     frames = []
@@ -204,13 +204,16 @@ def main():
             assert not bridge._project["playback_completed"]
             unexpected = [value for value in errors if 'PlaceholderText: Binding loop detected for property "width"' not in value]
             assert not unexpected, unexpected
+            from study_update_check import check_updates
+            check_updates(engine,window,writer,reading,captures)
+            assert not errors, errors
             print("real EOF, keys, 12 cards, vertical divider, saved highlight delay, wheel/follow, card seek, normal/narrow: OK", flush=True)
             app.exit(0)
         except Exception as exc:
             failed.append(traceback.format_exc()); app.exit(1)
 
     QTimer.singleShot(1000, run_checks)
-    QTimer.singleShot(12000, lambda: app.exit(3))
+    QTimer.singleShot(30000, lambda: app.exit(3))
     code = app.exec()
     player.stop(); player.setSource(QUrl())
     engine.deleteLater(); app.processEvents()

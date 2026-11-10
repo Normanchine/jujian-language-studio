@@ -5,6 +5,8 @@ import QtQuick.Layouts
 
 Item {
     id: settingsPage
+    Component.onCompleted: settings.refreshKeyStatus()
+    onVisibleChanged: if (visible) settings.refreshKeyStatus()
     property string appVersion: ""
     component ShortcutField: TextField {
         id: keyField
@@ -75,6 +77,7 @@ Item {
                             }
                             Text { x: 10; y: 42; text: themeOption.modelData.name
                                 color: "#334039"; font.family: "Microsoft YaHei UI"; font.pixelSize: 11 }
+                            HomeAmbience { anchors.fill: parent; themeKey: themeOption.modelData.key; ink: themeOption.modelData.accent; area: "swatch" }
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                 onClicked: settings.setTheme(themeOption.modelData.key) }
                         }
@@ -96,18 +99,34 @@ Item {
                     ShortcutField { id: loopKey; sequence: settings.values.shortcut_loop }
                     Text { text: "重播当前句"; color: "#4B5A50" }
                     ShortcutField { id: replayKey; sequence: settings.values.shortcut_replay }
+                    Text { text: "复制当前卡片"; color: "#4B5A50" }
+                    ShortcutField { id: copyKey; objectName: "copyShortcut"; sequence: settings.values.shortcut_copy }
                 }
                 Row { spacing: 10
                     AppButton { text: "保存快捷键"
-                        onClicked: settings.saveShortcuts(previousKey.sequence, nextKey.sequence, playKey.sequence, loopKey.sequence, replayKey.sequence) }
+                        onClicked: settings.saveShortcuts(previousKey.sequence, nextKey.sequence, playKey.sequence, loopKey.sequence, replayKey.sequence, copyKey.sequence) }
                     AppButton { text: "恢复默认快捷键"
                         onClicked: {
                             previousKey.sequence = "Ctrl+Left"; nextKey.sequence = "Ctrl+Right"
                             playKey.sequence = "Space"; loopKey.sequence = "Ctrl+L"; replayKey.sequence = "Ctrl+R"
-                            settings.saveShortcuts("Ctrl+Left", "Ctrl+Right", "Space", "Ctrl+L", "Ctrl+R")
+                            copyKey.sequence = "Ctrl+Shift+C"
+                            settings.saveShortcuts("Ctrl+Left", "Ctrl+Right", "Space", "Ctrl+L", "Ctrl+R", "Ctrl+Shift+C")
                         } }
                 }
                 Text { text: settings.status; color: "#748178"; font.pixelSize: 12; width: parent.width; wrapMode: Text.Wrap }
+                Text { text: "复制当前卡片会复制原文、译文和已有解析；播放继续。"; color: "#78857A"; font.pixelSize: 12 }
+                Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
+                Text { text: "窗口关闭行为"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D" }
+                RowLayout {
+                    Text { text: "点击关闭按钮时"; color: "#4B5A50" }
+                    AppCombo {
+                        objectName: "closeBehaviorChoice"; implicitWidth: 200
+                        model: ["直接退出句间", "隐藏到系统托盘"]
+                        currentIndex: settings.values.close_behavior === "tray" ? 1 : 0
+                        onActivated: settings.saveCloseBehavior(currentIndex === 1 ? "tray" : "exit")
+                    }
+                }
+                Text { text: "托盘菜单中的“退出句间”始终退出程序。"; color: "#78857A"; font.pixelSize: 12 }
                 Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
                 Text { text: "精读快捷键"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D" }
                 Text { text: "按住快捷键拖选词句，松开鼠标查询。普通划选用于复制。";width: parent.width;wrapMode: Text.Wrap;color: "#78857A";font.pixelSize: 12 }
@@ -147,7 +166,7 @@ Item {
                     background: Rectangle { radius: 7; color: "#F8FAF8"; border.color: "#DEE4DE" } }
                 RowLayout { width: parent.width; height: 38
                     TextField { id: keyField; Layout.fillWidth: true; echoMode: TextInput.Password
-                        placeholderText: settings.hasKey ? "已保存 API Key；输入新值可替换" : "输入 API Key"
+                        placeholderText: settings.keyStatusLoading ? "正在检查已保存的密钥…" : settings.hasKey ? "已保存 API Key；输入新值可替换" : "输入 API Key"
                         background: Rectangle { radius: 7; color: "#F8FAF8"; border.color: "#DEE4DE" } }
                     AppButton { text: "保存密钥"; enabled: keyField.text.trim().length > 0
                         onClicked: {
@@ -157,9 +176,9 @@ Item {
                                     writingRoute.currentIndex ? "cloud" : "local") && settings.saveKey(keyField.text))
                                 keyField.clear()
                         } }
-                    AppButton { text: "移除密钥"; enabled: settings.hasKey; onClicked: settings.clearKey() }
+                    AppButton { text: "移除密钥"; enabled: settings.hasKey && !settings.keyStatusLoading; onClicked: settings.clearKey() }
                 }
-                Text { text: settings.hasKey ? "此接口的 API Key 已保存；切换服务商需保存对应密钥。" : "此接口尚无 API Key；密钥只保存在 Windows 凭据管理器。"
+                Text { text: settings.keyStatusLoading ? "正在检查 Windows 凭据管理器…" : settings.hasKey ? "此接口的 API Key 已保存；切换服务商需保存对应密钥。" : "此接口尚无 API Key；密钥只保存在 Windows 凭据管理器。"
                     color: "#839087"; font.pixelSize: 11 }
                 RowLayout { width: parent.width; height: 39; spacing: 14
                     Text { text: "中文翻译"; color: "#4B5A50"; Layout.preferredWidth: 80 }

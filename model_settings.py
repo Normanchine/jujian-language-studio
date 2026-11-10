@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QKeySequence
 from reading_gesture import normalize_trigger, MODIFIER_NAMES
 
-import keyring
-from keyring.backends.Windows import WinVaultKeyring
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from core.paths import ROOT, DATA
@@ -38,6 +37,18 @@ THEME_PALETTES = {
               "accent": "#647A96", "selection": "#E2E9F0"},
     "classic": {"name": "经典浅色", "side": "#E1E6E1", "page": "#F2F4F1", "surface": "#FFFFFF",
                 "accent": "#C94859", "selection": "#E8ECE7"},
+    "rose": {"name": "樱粉", "side": "#ECD3DE", "page": "#FBF3F7", "surface": "#FFFAFC",
+             "accent": "#A14F70", "selection": "#F5E2EB"},
+    "coral": {"name": "珊瑚", "side": "#EED2C8", "page": "#FCF3EE", "surface": "#FFFBF8",
+              "accent": "#A75844", "selection": "#F7E2D9"},
+    "mint": {"name": "薄荷", "side": "#C4E3D8", "page": "#EDF9F4", "surface": "#F9FFFC",
+             "accent": "#357C65", "selection": "#D7F0E5"},
+    "olive": {"name": "橄榄", "side": "#DCE0BF", "page": "#F6F8EC", "surface": "#FDFEF8",
+              "accent": "#6D7936", "selection": "#E9EDCF"},
+    "indigo": {"name": "靛青", "side": "#CFD3EA", "page": "#F1F2FB", "surface": "#FCFCFF",
+               "accent": "#626AA4", "selection": "#E1E4F5"},
+    "silver": {"name": "银灰", "side": "#D9DFE0", "page": "#F3F6F6", "surface": "#FCFEFE",
+               "accent": "#60797C", "selection": "#E3EBEC"},
 }
 THEMES = set(THEME_PALETTES)
 DEFAULTS = {
@@ -56,6 +67,8 @@ DEFAULTS = {
     "shortcut_play": "Space",
     "shortcut_loop": "Ctrl+L",
     "shortcut_replay": "Ctrl+R",
+    "shortcut_copy": "Ctrl+Shift+C",
+    "close_behavior": "exit",
     "shortcut_reading_query": "Alt",
     "video_size": "small",
     "show_transcript": False,
@@ -74,6 +87,8 @@ def read_settings() -> dict:
     result = {**DEFAULTS, **{key: raw[key] for key in DEFAULTS if key in raw}}
     if not isinstance(result["theme"], str) or result["theme"] not in THEMES:
         result["theme"] = DEFAULTS["theme"]
+    if result["close_behavior"] not in ("exit", "tray"):
+        result["close_behavior"] = "exit"
     try:result["shortcut_reading_query"]=normalize_trigger(result["shortcut_reading_query"])
     except ValueError:result["shortcut_reading_query"]="Alt"
     return result
@@ -89,6 +104,8 @@ def credential_user(endpoint: str) -> str:
 
 
 def cloud_key(endpoint: str = "") -> str:
+    import keyring
+    from keyring.backends.Windows import WinVaultKeyring
     vault = keyring.get_keyring()
     if not isinstance(vault, WinVaultKeyring):
         raise RuntimeError("Windows 凭据管理器不可用")
@@ -97,12 +114,18 @@ def cloud_key(endpoint: str = "") -> str:
 
 class SettingsBridge(QObject):
     changed = Signal()
+    keyStatusChanged = Signal()
+    _keyStatusReady = Signal(int, bool)
 
     def __init__(self) -> None:
         super().__init__()
         self._data = read_settings()
         self._status = ""
         self._safety = DataSafetyBridge(CONFIG.parent, self)
+        self._has_key = False
+        self._key_status_loading = False
+        self._key_status_revision = 0
+        self._keyStatusReady.connect(self._finish_key_status)
 
     @Property(QObject, constant=True)
     def dataSafety(self):
@@ -120,12 +143,50 @@ class SettingsBridge(QObject):
     def themeOptions(self) -> list[dict]:
         return [{"key": key, **palette} for key, palette in THEME_PALETTES.items()]
 
-    @Property(bool, notify=changed)
+    @Property(bool, notify=keyStatusChanged)
     def hasKey(self) -> bool:
-        try:
-            return bool(cloud_key(self._data["cloud_endpoint"]))
-        except RuntimeError:
-            return False
+        return self._has_key
+
+    @Property(bool, notify=keyStatusChanged)
+    def keyStatusLoading(self) -> bool:
+        return self._key_status_loading
+
+    @Slot()
+    def refreshKeyStatus(self) -> None:
+        if self._key_status_loading:
+            return
+        self._key_status_revision += 1
+        revision = self._key_status_revision
+        endpoint = self._data["cloud_endpoint"]
+        self._key_status_loading = True
+        self.keyStatusChanged.emit()
+
+        def run():
+            try:
+                present = bool(cloud_key(endpoint))
+            except Exception:
+                present = False
+            try:
+                self._keyStatusReady.emit(revision, present)
+            except RuntimeError:
+                pass  # The application may have closed during the vault query.
+
+        threading.Thread(target=run, daemon=True, name='settings-key-status').start()
+
+    @Slot(int, bool)
+    def _finish_key_status(self, revision: int, present: bool) -> None:
+        if revision != self._key_status_revision:
+            return
+        self._has_key = present
+        self._key_status_loading = False
+        self.keyStatusChanged.emit()
+
+    def _set_key_status(self, present: bool) -> None:
+        # A completed read for a previous endpoint/save must never replace new state.
+        self._key_status_revision += 1
+        self._has_key = present
+        self._key_status_loading = False
+        self.keyStatusChanged.emit()
 
     @Property(str, notify=changed)
     def status(self) -> str:
@@ -161,6 +222,9 @@ class SettingsBridge(QObject):
             CONFIG.parent.mkdir(parents=True, exist_ok=True)
             atomic_json(CONFIG, self._data)
             self._status = "设置已保存。"
+            if credential_user(previous["cloud_endpoint"]) != credential_user(endpoint):
+                self._set_key_status(False)
+                self.refreshKeyStatus()
             self.changed.emit()
             return True
         except OSError as exc:
@@ -209,6 +273,8 @@ class SettingsBridge(QObject):
         return True
 
     def clashSecret(self) -> str:
+        import keyring
+        from keyring.backends.Windows import WinVaultKeyring
         try:
             vault = keyring.get_keyring()
             if isinstance(vault, WinVaultKeyring):
@@ -219,6 +285,8 @@ class SettingsBridge(QObject):
 
     @Slot(str, str, str, bool, result=bool)
     def saveDownloadNetwork(self, proxy: str, controller: str, secret: str, automatic: bool) -> bool:
+        import keyring
+        from keyring.backends.Windows import WinVaultKeyring
         from clash_service import validate_loopback
         try:
             proxy = validate_loopback(proxy)
@@ -240,15 +308,20 @@ class SettingsBridge(QObject):
             return False
 
     @Slot(str, str, str, str, str, result=bool)
-    def saveShortcuts(self, previous: str, following: str, play: str, loop: str, replay: str = "Ctrl+R") -> bool:
+    @Slot(str, str, str, str, str, str, result=bool)
+    def saveShortcuts(self, previous: str, following: str, play: str, loop: str, replay: str = "Ctrl+R", copy: str | None = None) -> bool:
         sequences = [QKeySequence(value).toString(QKeySequence.PortableText)
-                     for value in (previous, following, play, loop, replay)]
-        if any(not value for value in sequences) or len(set(sequences)) != 5:
+                     for value in (previous, following, play, loop, replay, copy if copy is not None else self._data["shortcut_copy"])]
+        if any(not value for value in sequences) or len(set(sequences)) != 6:
             self._status = "快捷键不能为空或重复，请重新录入。"
             self.changed.emit()
             return False
         return self._save_preferences(dict(zip(
-            ("shortcut_previous", "shortcut_next", "shortcut_play", "shortcut_loop", "shortcut_replay"), sequences)))
+            ("shortcut_previous", "shortcut_next", "shortcut_play", "shortcut_loop", "shortcut_replay", "shortcut_copy"), sequences)))
+
+    @Slot(str, result=bool)
+    def saveCloseBehavior(self, behavior: str) -> bool:
+        return behavior in ("exit", "tray") and self._save_preferences({"close_behavior": behavior})
 
     @Slot(str, bool, result=bool)
     def saveListeningLayout(self, size: str, transcript: bool) -> bool:
@@ -272,6 +345,8 @@ class SettingsBridge(QObject):
 
     @Slot(str, result=bool)
     def saveKey(self, value: str) -> bool:
+        import keyring
+        from keyring.backends.Windows import WinVaultKeyring
         if not value.strip():
             self._status = "密钥不能为空。"
             self.changed.emit()
@@ -281,6 +356,7 @@ class SettingsBridge(QObject):
             if not isinstance(vault, WinVaultKeyring):
                 raise RuntimeError("Windows 凭据管理器不可用")
             vault.set_password(KEY_SERVICE, credential_user(self._data["cloud_endpoint"]), value.strip())
+            self._set_key_status(True)
             self._status = "API Key 已保存到 Windows 凭据管理器。"
             self.changed.emit()
             return True
@@ -297,13 +373,17 @@ class SettingsBridge(QObject):
 
     @Slot()
     def clearKey(self) -> None:
+        import keyring
+        from keyring.backends.Windows import WinVaultKeyring
         try:
             vault = keyring.get_keyring()
             if not isinstance(vault, WinVaultKeyring):
                 raise RuntimeError("Windows 凭据管理器不可用")
             vault.delete_password(KEY_SERVICE, credential_user(self._data["cloud_endpoint"]))
+            self._set_key_status(False)
             self._status = "API Key 已移除。"
         except keyring.errors.PasswordDeleteError:
+            self._set_key_status(False)
             self._status = "未保存 API Key。"
         except (RuntimeError, OSError) as exc:
             self._status = f"移除密钥失败：{exc}"

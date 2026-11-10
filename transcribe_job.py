@@ -37,7 +37,33 @@ def merge_english_pauses(segments: list[dict]) -> list[dict]:
 
 
 def merge_japanese_fragments(segments: list[dict], minimum_seconds: float = 1.0) -> list[dict]:
-    """Keep short ASR fragments with nearby speech instead of making tiny study cards."""
+    """Join only tightly adjacent grammatical fragments, preserving short replies."""
+    replies = re.compile(r"^(?:はい|ええ|うん|ううん|いいえ|いや|いい|いいよ|いいけど|いいですよ|"
+                         r"そう|そうか|そうですね|そうですか|なるほど|分かりました|わかりました|"
+                         r"お願いします|ありがとう|ありがとうございます|どうも|もしもし|大丈夫|大丈夫です)[ねよー〜]*$")
+    endings = re.compile(r"(?:です|ます|でした|ました|ません|ない|かった|でしょう|だね|だよ|だろう)[ねよー〜]*$")
+    particles = r"(?:は|が|を|に|へ|で|と|も|の|から|まで|より|しか|って|ので|けど)"
+
+    def compact(text):
+        return re.sub(r"\s+", "", text)
+
+    def can_join(left, right):
+        before, after = compact(left["text"]), compact(right["text"])
+        gap = right["start"] - left["end"]
+        if not -0.02 <= gap <= 0.25 or right["end"] - left["start"] > 8:
+            return False
+        if left.get("source_segments", 1) + right.get("source_segments", 1) > 3:
+            return False
+        if replies.fullmatch(before) or replies.fullmatch(after):
+            return False
+        if before.endswith(("。", "！", "？", "!", "?")) or endings.search(before):
+            return False
+        # Timing alone is insufficient: require a grammatical continuation.
+        return bool(re.search(particles + r"$", before)
+                    or re.match(particles, after)
+                    or (before.endswith(("て", "で"))
+                        and re.match(r"(?:くれ|もら|いただ|しま|いる|いた|います|おき|みる|あげ|ほし)", after)))
+
     merged = [{**item, "words": list(item.get("words", []))} for item in segments]
     index = 0
     while index < len(merged):
@@ -45,20 +71,21 @@ def merge_japanese_fragments(segments: list[dict], minimum_seconds: float = 1.0)
         if fragment["end"] - fragment["start"] >= minimum_seconds or len(merged) == 1:
             index += 1
             continue
-        if fragment["text"].rstrip().endswith(("。", "！", "？", "!", "?")):
+        if (fragment["text"].rstrip().endswith(("。", "！", "？", "!", "?"))
+                or replies.fullmatch(compact(fragment["text"]))):
             index += 1
             continue
         choices = []
         if index:
             previous = merged[index - 1]
             gap = max(0.0, fragment["start"] - previous["end"])
-            if gap <= 0.6 and fragment["end"] - previous["start"] <= 15:
-                choices.append((gap, 0 if not previous["text"].rstrip().endswith(("。", "？", "!", "?")) else 1, index - 1))
+            if can_join(previous, fragment):
+                choices.append((gap, 0, index - 1))
         if index + 1 < len(merged):
             following = merged[index + 1]
             gap = max(0.0, following["start"] - fragment["end"])
-            if gap <= 0.6 and following["end"] - fragment["start"] <= 15:
-                choices.append((gap, 0 if not fragment["text"].rstrip().endswith(("。", "？", "!", "?")) else 1, index + 1))
+            if can_join(fragment, following):
+                choices.append((gap, 1, index + 1))
         if not choices:
             index += 1
             continue

@@ -7,50 +7,24 @@ import QtQuick.Effects
 
 ApplicationWindow {
     id: root
-    property string appVersion: "0.2.9"
+    property string appVersion: "0.2.12"
     property var readingPreviewItems: []
     property var readingHomeState: reading.homeState
     width: 1180
     height: 820
     minimumWidth: 900
     minimumHeight: 640
-    visible: true
-    opacity: uiAnimationsEnabled ? 0 : 1
+    property var nativeActions: typeof windowActions !== "undefined" ? windowActions : null
+    property bool forceExit: false
+    property string previewLabel: ""
+    visible: !nativeActions
     flags: Qt.Window | Qt.FramelessWindowHint
-    title: study.hasMedia ? "句间 — " + study.title : "句间"
-    color: "transparent"
+    title: (study.hasMedia ? "句间 — " + study.title : "句间") + (previewLabel ? " · " + previewLabel : "")
+    color: pageColor
     background: Rectangle {
         color: root.pageColor; radius: root.maximized ? 0 : 12
         antialiasing: true
     }
-    contentItem.layer.enabled: !root.maximized
-    contentItem.transformOrigin: Item.Center
-    contentItem.scale: uiAnimationsEnabled ? 0.965 : 1
-    Component.onCompleted: if (uiAnimationsEnabled) startupAnimation.start()
-    ParallelAnimation {
-        id: startupAnimation
-        NumberAnimation { target: root; property: "opacity"; from: 0; to: 1
-            duration: 190; easing.type: Easing.OutCubic }
-        NumberAnimation { target: root.contentItem; property: "scale"; from: 0.965; to: 1
-            duration: 210; easing.type: Easing.OutCubic }
-    }
-    contentItem.layer.effect: MultiEffect {
-        maskEnabled: true
-        maskSource: cornerMask
-        maskThresholdMin: 0.5
-        maskSpreadAtMin: 1.0
-    }
-    Rectangle {
-        id: cornerMask
-        width: root.width; height: root.height
-        radius: root.maximized ? 0 : 12
-        antialiasing: true
-        color: "white"; visible: false
-        layer.enabled: true
-        layer.smooth: true
-        layer.samples: 4
-    }
-
     property string themeKey: settings.values.theme || "sage"
     property color sidebarColor: settings.palette.side
     property color pageColor: settings.palette.page
@@ -122,11 +96,15 @@ ApplicationWindow {
     }
     property bool maximized: visibility === Window.Maximized
     onClosing: function(close) {
-        if (!writingView.saveNow()) { close.accepted = false; saveFailureDialog.open(); return; }
+        if (!writingView.saveNow()) { close.accepted = false; forceExit = false; saveFailureDialog.open(); return; }
         root.saveCurrentPlayback()
         writer.pauseTask()
-        if (writer.saveError) { close.accepted = false; saveFailureDialog.open(); return; }
+        if (writer.saveError) { close.accepted = false; forceExit = false; saveFailureDialog.open(); return; }
         readingView.leavePage()
+        if (!forceExit && settings.values.close_behavior === "tray" && nativeActions && nativeActions.trayAvailable) {
+            close.accepted = false
+            nativeActions.hideToTray()
+        }
     }
     Dialog {
         id: saveFailureDialog
@@ -282,7 +260,7 @@ ApplicationWindow {
         onPlaybackStateChanged: {
             if (playbackState !== MediaPlayer.PlayingState) root.saveCurrentPlayback()
         }
-        onPositionChanged: {
+        onPositionChanged: function(position) {
             if (!root.playbackReady) return
             if (root.highlightSeekFloor >= 0
                     && position - root.highlightDelayMs >= root.highlightSeekFloor * 1000)
@@ -477,7 +455,7 @@ ApplicationWindow {
         Row {
             anchors.right: parent.right; anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter; spacing: 3
-            WindowButton { objectName: "minimizeButton"; kind: "minimize"; hint: "最小化"; onClicked: root.showMinimized() }
+            WindowButton { objectName: "minimizeButton"; kind: "minimize"; hint: "最小化"; onClicked: root.nativeActions ? root.nativeActions.minimize() : root.showMinimized() }
             WindowButton { objectName: "maximizeButton"; kind: root.maximized ? "restore" : "maximize"
                 hint: root.maximized ? "还原" : "最大化"
                 onClicked: root.maximized ? root.showNormal() : root.showMaximized() }
@@ -554,25 +532,50 @@ ApplicationWindow {
             anchors.fill: parent; visible: root.page === "home"
             themeAccent: root.accentColor
             onOpenLocal: mediaPicker.open()
-            onNewDraft: { if (!writingView.saveNow() || !writer.newDraft("ja")) return; writingView.libraryMode = false; root.page = "writing" }
-            onOpenProject: { root.saveCurrentPlayback(); study.openProject(path) }
-            onOpenDraft: { writer.openDraft(path); writingView.libraryMode = false; root.page = "writing" }
+            onNewDraft: { if (!writingView.saveNow() || !writer.newDraft("ja")) return; writingView.openEditor(); root.page = "writing" }
+            onOpenProject: function(path) { root.saveCurrentPlayback(); study.openProject(path) }
+            onOpenDraft: function(path) { writer.openDraft(path); writingView.openEditor(); root.page = "writing" }
             onOpenLibrary: { study.refreshProjects(); root.page = "library" }
             onOpenWriting: { writer.refresh(); writingView.showLibrary(); root.page = "writing" }
             onOpenSettings: root.page = "settings"
         }
         LibraryView { anchors.fill: parent; visible: root.page === "library"
             themeAccent: root.accentColor
-            onOpenProject: { root.saveCurrentPlayback(); study.openProject(path) } }
-        WritingView { id: writingView; anchors.fill: parent; visible: root.page === "writing"
-            themeAccent: root.accentColor }
-        ReadingHome { id: readingView; anchors.fill: parent; visible: root.page === "reading"
-            materials: root.readingPreviewItems.length ? root.readingPreviewItems.filter(function(a) {
-                return a.sourceKind !== "personal_import" && a.sourceKind !== "user_paste" && a.sourceKind !== "personal_practice";
-            }).concat(reading.importedCatalogue) : reading.catalogue; savedState: root.readingHomeState
-            onStateEdited: function(state) { root.readingHomeState = state; reading.saveHomeState(state) } }
-        SettingsView { anchors.fill: parent; visible: root.page === "settings"
-            appVersion: root.appVersion }
+            onOpenProject: function(path) { root.saveCurrentPlayback(); study.openProject(path) } }
+        Item {
+            id: writingView; anchors.fill: parent; visible: root.page === "writing"
+            function ensure() { writingLoader.active = true; return writingLoader.item }
+            function saveNow() { return !writingLoader.item || writingLoader.item.saveNow() }
+            function showLibrary() { ensure().showLibrary() }
+            function openEditor() { ensure().libraryMode = false }
+            onVisibleChanged: if (visible) ensure()
+            Loader {
+                id: writingLoader; objectName: "writingPageLoader"; anchors.fill: parent; active: false
+                sourceComponent: WritingView { themeAccent: root.accentColor }
+            }
+        }
+        Item {
+            id: readingView; anchors.fill: parent; visible: root.page === "reading"
+            function ensure() { readingLoader.active = true; return readingLoader.item }
+            function leavePage() { if (readingLoader.item) readingLoader.item.leavePage() }
+            function showHome() { ensure().showHome() }
+            onVisibleChanged: if (visible) ensure()
+            Loader {
+                id: readingLoader; objectName: "readingPageLoader"; anchors.fill: parent; active: false
+                sourceComponent: ReadingHome {
+                    materials: root.readingPreviewItems.length ? root.readingPreviewItems.filter(function(a) {
+                        return a.sourceKind !== "personal_import" && a.sourceKind !== "user_paste" && a.sourceKind !== "personal_practice";
+                    }).concat(reading.importedCatalogue) : reading.catalogue; savedState: root.readingHomeState
+                    onStateEdited: function(state) { root.readingHomeState = state; reading.saveHomeState(state) }
+                }
+            }
+        }
+        Loader {
+            id: settingsLoader; objectName: "settingsPageLoader"; anchors.fill: parent
+            visible: root.page === "settings"; active: false
+            onVisibleChanged: if (visible) active = true
+            sourceComponent: SettingsView { appVersion: root.appVersion }
+        }
 
         Item {
             id: leftPane
@@ -1016,5 +1019,17 @@ ApplicationWindow {
     Shortcut { sequence: settings.values.shortcut_previous; enabled: root.listeningKeysEnabled && study.activeIndex > 0; onActivated: study.navigateSentence(-1) }
     Shortcut { sequence: settings.values.shortcut_next; enabled: root.listeningKeysEnabled && study.activeIndex + 1 < study.sentenceCount; onActivated: study.navigateSentence(1) }
     Shortcut { sequence: settings.values.shortcut_loop; enabled: root.listeningKeysEnabled && study.sentenceCount > 0; onActivated: study.toggleLoop() }
+    Rectangle {
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 48
+        z: 150; width: copyToastText.implicitWidth + 32; height: 38; radius: 9
+        color: "#293B32"; visible: copyToastTimer.running && root.page === "listen"
+        Text { id: copyToastText; anchors.centerIn: parent; text: "已复制当前句"; color: "white"; font.pixelSize: 13 }
+        Timer { id: copyToastTimer; interval: 1400 }
+    }
+    Shortcut {
+        objectName: "copyCurrentSentenceShortcut"; sequence: settings.values.shortcut_copy
+        enabled: root.listeningKeysEnabled && study.sentenceCount > 0
+        onActivated: if (study.copyCurrentSentence()) copyToastTimer.restart()
+    }
     Shortcut { sequence: settings.values.shortcut_replay; enabled: root.listeningKeysEnabled && study.sentenceCount > 0; onActivated: root.replayCurrentSentence() }
 }

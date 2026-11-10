@@ -106,7 +106,10 @@ def main() -> int:
     app.aboutToQuit.connect(bridge.close)
     app.aboutToQuit.connect(writer.pauseTask)
     app.aboutToQuit.connect(downloads.close)
+    from core.window_shell import WindowActions
+    window_actions = WindowActions(app)
     engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("windowActions", window_actions)
     engine.rootContext().setContextProperty("study", bridge)
     engine.rootContext().setContextProperty("downloads", downloads)
     engine.rootContext().setContextProperty("settings", settings)
@@ -117,7 +120,9 @@ def main() -> int:
     if not engine.rootObjects():
         return 1
     window = engine.rootObjects()[0]
+    window_actions.attach(window, QSystemTrayIcon.isSystemTrayAvailable())
     use_windows_window_effects(window)
+    window.show()
     milestones["window_seconds"] = round(perf_counter() - STARTED, 3)
 
     def record_startup() -> None:
@@ -137,23 +142,25 @@ def main() -> int:
         tray.setToolTip("句间")
         menu = QMenu()
 
-        def restore_window() -> None:
-            window.showNormal()
-            window.raise_()
-            window.requestActivate()
-
-        menu.addAction("打开句间", restore_window)
+        menu.addAction("打开句间", window_actions.restore)
         menu.addSeparator()
-        menu.addAction("退出句间", window.close)
+        menu.addAction("退出句间", window_actions.exit)
         tray.setContextMenu(menu)
         tray.activated.connect(
-            lambda reason: restore_window()
+            lambda reason: window_actions.restore()
             if reason in (QSystemTrayIcon.ActivationReason.Trigger,
                           QSystemTrayIcon.ActivationReason.DoubleClick) else None
         )
         tray.show()
         app.aboutToQuit.connect(tray.hide)
-    return app.exec()
+    result = app.exec()
+    if window_actions.frame:
+        app.removeNativeEventFilter(window_actions.frame)
+    # Destroy QML while its Python context objects still exist.
+    from PySide6.QtCore import QCoreApplication, QEvent
+    engine.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    return result
 
 
 if __name__ == "__main__":

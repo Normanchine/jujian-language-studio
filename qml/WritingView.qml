@@ -14,7 +14,7 @@ Item {
     property bool librarySideOpen: false
     property bool reviewMode: false
     property bool comparisonMode: false
-    readonly property bool hasModelEssay: writer.current.language === "en" && !!String((writer.current.review || {}).revisedText || "").trim()
+    readonly property bool hasModelEssay: !!String(writer.current.custom_model || "").trim() || writer.current.language === "en" && !!String((writer.current.review || {}).revisedText || "").trim()
     property bool reviewDrawerOpen: false
     property bool sideOpen: false
     property int sideWidth: writer.sideWidth
@@ -178,6 +178,32 @@ Item {
             view.loadedPath = ""
             writer.changed()
             view.libraryMode = false; view.librarySideOpen = false; view.reviewMode = false
+        }
+    }
+
+    Popup {
+        id: customModelPopup; objectName: "writingCustomModelPopup"
+        parent: Overlay.overlay; anchors.centerIn: Overlay.overlay
+        width: Math.min(760, view.width - 32); height: Math.min(620, view.height - 32)
+        modal: true; focus: true; padding: 20
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { radius: 14; color: view.paper; border.color: "#DCE4DE" }
+        ColumnLayout { anchors.fill: parent; spacing: 12
+            Text { text: "编辑对照范文"; color: view.ink; font.pixelSize: 20 }
+            Text { text: "可直接修改当前范文，或 Ctrl+V 粘贴替换。保存后用于对照阅读，原 AI 范文仍可切换查看。"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: view.muted }
+            ScrollView { Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                TextArea { id: customModelInput; objectName: "writingCustomModelInput"; wrapMode: TextEdit.Wrap
+                    selectByMouse: true; font.family: "Georgia"; font.pixelSize: 18; color: view.ink
+                    placeholderText: "在这里粘贴范文"; background: Item {} }
+            }
+            RowLayout { Layout.fillWidth: true
+                AppButton { text: "粘贴"; onClicked: customModelInput.paste() }
+                Item { Layout.fillWidth: true }
+                AppButton { text: "取消"; onClicked: customModelPopup.close() }
+                AppButton { objectName: "writingCustomModelSave"; text: "保存范文"; primary: true
+                    onClicked: { if (writer.saveCustomModel(customModelInput.text)) { comparisonPane.useCustom = true; customModelPopup.close() } } }
+            }
         }
     }
 
@@ -349,21 +375,16 @@ Item {
         }
         Item { id: body; Layout.fillWidth: true; Layout.fillHeight: true
             property bool inlineSide: width >= 850
-            Rectangle { id: sheet; objectName: "writingSheet"
-                x: (view.reviewMode || view.sideOpen) && body.inlineSide
-                   ? (body.width - sidePanel.width - width) / 2 : (body.width - width) / 2
-                 width: (view.reviewMode || view.sideOpen) && body.inlineSide
-                        ? Math.min(730, body.width - sidePanel.width - 14) : Math.min(body.width, 730)
-                height: body.height; radius: 15; color: view.paper; border.color: "#E5E9E2"
-                ColumnLayout { anchors.fill: parent; anchors.margins: sheet.width < 600 ? 17 : 26; spacing: 12
-                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 43; visible: !view.reviewMode
-                        TextField { id: titleField; objectName: "writingTitleField"; Layout.fillWidth: true; Layout.preferredHeight: 42
-                            placeholderText: "给这篇作文起个标题"; font.pixelSize: 22; font.weight: Font.DemiBold
-                            color: view.ink; background: Item {}
-                            onTextChanged: autosave.restart() }
-                        Text { text: writer.current.language === "ja" ? "日语" : "英语";
-                            color: view.muted; font.pixelSize: 11 }
-                    }
+            Rectangle {
+                id: contextPanel; objectName: "writingContextPanel"
+                visible: !view.reviewMode
+                width: Math.max(280, Math.min(470, body.width * 0.36)); height: body.height
+                property real materialHeight: view.sideOpen ? Math.min(height * 0.60, Math.max(100, height - 270)) : 0
+                Behavior on materialHeight { NumberAnimation { duration: 260; easing.type: Easing.InOutCubic } }
+                radius: 14; color: view.paper; border.color: "#E5E9E2"
+                Item {
+                    id: topicRegion; objectName: "writingTopicRegion"; anchors.fill: parent; anchors.margins: 16; anchors.bottomMargin: contextPanel.materialHeight + 68; clip: true
+                    ColumnLayout { anchors.fill: parent; spacing: 12
                     RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 38; visible: !view.reviewMode && !view.taskBound
                         Text { text: writer.current.writing_mode === "toefl_email" ? "托福 · 邮件"
                                    : writer.current.writing_mode === "toefl_discussion" ? "托福 · 学术讨论"
@@ -384,7 +405,7 @@ Item {
                     ColumnLayout {
                         visible: view.taskBound && !view.reviewMode
                         Layout.fillWidth: true; spacing: 7
-                        Text { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 11; color: view.muted
+                        Text { visible: !view.sideOpen || contextPanel.height >= 650; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 11; color: view.muted
                             text: (writer.current.writing_mode === "toefl_email" ? "托福专项 · 邮件" : "托福专项 · 学术讨论")
                                 + (writer.current.topic_source === "demo" ? " · 演示题（非真题，时限仅作演示）" : " · " + writer.current.task_source) }
                         Flow {
@@ -407,16 +428,17 @@ Item {
                                 text: "结束作答"; onClicked: { if (!view.saveNow()) return; writer.finishTask() } }
                             AppButton { objectName: "writingTaskEdit"; visible: view.taskState === "finished"; text: "继续修改"
                                 onClicked: { writer.editTask(); draftText.forceActiveFocus() } }
-                            AppButton { objectName: "writingTaskOriginal"; visible: !!writer.current.submission; text: "查看原稿"; flat: true
+                            AppButton { objectName: "writingTaskOriginal"; visible: !!writer.current.submission && (!view.sideOpen || contextPanel.height >= 650); text: "查看原稿"; flat: true
                                 onClicked: submissionPopup.open() }
                         }
                     }
-                     Rectangle { id: topicCard; Layout.fillWidth: true
+                     Rectangle { id: topicCard; objectName: "writingTopicCard"; Layout.fillWidth: true; Layout.fillHeight: true
+                         Layout.minimumHeight: expanded ? 70 : 44
                          property bool expanded: view.topicExpanded || !!topicField.text.trim()
                                                  || writer.current.writing_mode !== "practice"
                          property bool printed: !!topicField.text.trim() && !view.topicEditing
                          Layout.preferredHeight: !expanded ? 44
-                            : printed ? (view.taskBound ? Math.min(printedTopic.implicitHeight + 64, Math.max(130, view.height * 0.27)) : printedTopic.implicitHeight + 64)
+                            : printed ? printedTopic.implicitHeight + 64
                             : Math.min(view.height > 650 ? 170 : 118,
                                        Math.max(106, topicField.contentHeight + 40))
                         color: printed ? view.paper : "#F8FAF7"; radius: printed ? 0 : 9
@@ -433,9 +455,11 @@ Item {
                             RowLayout { Layout.fillWidth: true
                                 Text { text: writer.current.writing_mode === "practice" ? "主题或写作任务" : "本次题目"
                                     color: view.ink; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                                Text { visible: !!topicField.text; text: view.taskBound ? "上下滚动查看完整题目" : writer.current.topic_source === "ai" ? "AI 模拟题"
+                                Text { visible: !!topicField.text; text: view.taskBound ? "已绑定题目" : writer.current.topic_source === "ai" ? "AI 模拟题"
                                         : writer.current.topic_source === "ets_user_entry" ? "ETS 材料 · 自行录入" : "自定题目"
                                     color: view.muted; font.pixelSize: 10 }
+                                AppButton { objectName: "writingCopyTopic"; visible: topicCard.printed; text: "复制"; flat: true
+                                    onClicked: { printedTopic.selectAll(); printedTopic.copy(); printedTopic.deselect() } }
                                 AppButton { visible: !view.taskBound && writer.current.writing_mode === "practice" && !topicField.text.trim()
                                     objectName: "collapseWritingTopicButton"; text: "收起"; flat: true
                                     onClicked: { view.topicExpanded = false; view.topicEditing = false; draftText.forceActiveFocus() } }
@@ -445,14 +469,19 @@ Item {
                                     text: "完成"; flat: true
                                     onClicked: { if (!view.saveNow()) return; view.topicEditing = false; draftText.forceActiveFocus() } }
                             }
-                            ScrollView { id: promptScroll; Layout.fillWidth: true; Layout.fillHeight: true; visible: topicCard.printed; clip: true
+                            ScrollView { id: promptScroll; objectName: "writingPromptScroll"; Layout.fillWidth: true; Layout.fillHeight: true; visible: topicCard.printed; clip: true
+                                contentWidth: availableWidth; contentHeight: printedTopic.height
                                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                                ScrollBar.vertical.policy: view.taskBound ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
-                            Text { id: printedTopic; objectName: "printedWritingTopic"
-                                width: Math.max(0, promptScroll.availableWidth - 14); visible: topicCard.printed
-                                text: topicField.text; textFormat: Text.PlainText; wrapMode: Text.Wrap
+                                ScrollBar.vertical: ScrollBar {
+                                    objectName: "writingPromptScrollbar"; orientation: Qt.Vertical
+                                    parent: promptScroll; x: promptScroll.width - width; y: 0; height: promptScroll.height
+                                    interactive: true; active: view.sideOpen; policy: ScrollBar.AsNeeded
+                                }
+                            TextEdit { id: printedTopic; readOnly: true; selectByMouse: true; objectName: "printedWritingTopic"
+                                height: implicitHeight; width: Math.max(0, promptScroll.availableWidth - 14); visible: topicCard.printed
+                                text: topicField.text; textFormat: TextEdit.PlainText; wrapMode: TextEdit.Wrap
                                 font.family: writer.current.language === "en" ? "Georgia" : "Yu Gothic UI"
-                                font.pixelSize: 16; lineHeight: 1.4; color: view.ink }
+                                font.pixelSize: 15; color: view.ink }
                             }
                             ScrollView { Layout.fillWidth: true; Layout.fillHeight: true; visible: !topicCard.printed && !view.taskBound
                                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
@@ -471,6 +500,30 @@ Item {
                             Layout.fillWidth: true; elide: Text.ElideRight; color: view.muted; font.pixelSize: 11 }
                         AppButton { visible: !view.taskBound; text: writer.busy ? "生成中…" : "AI 模拟题"; flat: true; enabled: !writer.busy
                             onClicked: { if (!view.saveNow()) return; writer.generateTopic() } }
+                    }
+
+
+                    }
+                }
+                ColumnLayout { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                    anchors.margins: 16; anchors.bottomMargin: contextPanel.materialHeight + 16; spacing: 6
+                        AppButton { objectName: "writingMaterialsToggle"; text: view.sideOpen ? "收起素材，展开题目" : "素材 / 词汇 / 表达"; Layout.fillWidth: true
+                            onClicked: { if (!view.sideOpen) view.sideMode = "both"; view.setSide(!view.sideOpen) } }
+                }
+            }
+            Rectangle { id: sheet; objectName: "writingSheet"
+                x: !view.reviewMode ? contextPanel.width + 14 : 0
+                width: !view.reviewMode ? body.width - contextPanel.width - 14
+                       : body.width - (body.inlineSide ? sidePanel.width + 14 : 0)
+                height: body.height; radius: 15; color: view.paper; border.color: "#E5E9E2"
+                ColumnLayout { anchors.fill: parent; anchors.margins: sheet.width < 600 ? 17 : 26; spacing: 12
+                    RowLayout { Layout.fillWidth: true; Layout.preferredHeight: 43; visible: !view.reviewMode
+                        TextField { id: titleField; objectName: "writingTitleField"; Layout.fillWidth: true; Layout.preferredHeight: 42
+                            placeholderText: "给这篇作文起个标题"; font.pixelSize: 22; font.weight: Font.DemiBold
+                            color: view.ink; background: Item {}
+                            onTextChanged: autosave.restart() }
+                        Text { text: writer.current.language === "ja" ? "日语" : "英语";
+                            color: view.muted; font.pixelSize: 11 }
                     }
                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#E9EDE7" }
                     ScrollView { id: draftScroll; objectName:"writingDraftScroll"; Layout.fillWidth: true; Layout.fillHeight: true; visible: !view.reviewMode
@@ -538,12 +591,12 @@ Item {
                                     radius: 10; color: settings.palette.page; border.color: settings.palette.selection
                                     Column { id: attachedModelContent; x:16; y:16; width:parent.width-32; spacing:12
                                         RowLayout { width:parent.width
-                                            Text { text:"AI 修改后范文"; color:view.themeAccent; font.pixelSize:15; font.weight:Font.DemiBold; Layout.fillWidth:true }
+                                            Text { text:writer.current.custom_model ? "我的范文" : "AI 修改后范文"; color:view.themeAccent; font.pixelSize:15; font.weight:Font.DemiBold; Layout.fillWidth:true }
                                             AppButton { objectName:"writingAttachedModelCompare"; text:"对照阅读"; flat:true; onClicked:view.openComparison() }
                                         }
                                         WritingSelectableText {
                                             objectName:"writingAttachedModelText"; width:parent.width
-                                            text: writer.current.review ? writer.current.review.revisedText || "" : ""
+                                            text: writer.current.custom_model || (writer.current.review || {}).revisedText || ""
                                             font.family:"Georgia"; font.pixelSize:18; color:view.ink
                                             onNoteRequested:function(source){view.showSelectionNote(source)}
                                             onSelectionCleared:function(source){view.clearSelectionNote(source)}
@@ -559,8 +612,8 @@ Item {
                         color:settings.palette.page; border.color:settings.palette.selection
                         RowLayout { anchors.fill:parent; anchors.margins:12; spacing:12
                             ColumnLayout { Layout.fillWidth:true; spacing:5
-                                Text { text:"AI 修改后范文"; color:view.themeAccent; font.pixelSize:13; font.weight:Font.DemiBold }
-                                Text { text:"已随作文保存 · 保留批改时的原稿"; color:view.muted; font.pixelSize:11; Layout.fillWidth:true; elide:Text.ElideRight }
+                                Text { text:writer.current.custom_model ? "我的范文" : "AI 修改后范文"; color:view.themeAccent; font.pixelSize:13; font.weight:Font.DemiBold }
+                                Text { text:writer.current.review ? "已随作文保存 · 保留批改时的原稿" : "已随作文保存，可与当前草稿对照"; color:view.muted; font.pixelSize:11; Layout.fillWidth:true; elide:Text.ElideRight }
                             }
                             AppButton { objectName:"writingAttachmentCompare"; text:"对照阅读"; onClicked:view.openComparison() }
                         }
@@ -583,23 +636,28 @@ Item {
                     }
                 }
             }
-            Rectangle { visible: (view.reviewMode ? view.reviewDrawerOpen : view.sideOpen) && !body.inlineSide
+            Rectangle { visible: view.reviewMode && view.reviewDrawerOpen && !body.inlineSide
                 anchors.fill: parent; z: 1; color: "#370F1C16"
                 MouseArea { anchors.fill: parent; onClicked: {
                     if (view.reviewMode) view.reviewDrawerOpen = false
                     else view.setSide(false)
                 } } }
             Rectangle { id: sidePanel; objectName: "writingSidePanel"; z: 2
-                visible: view.reviewMode ? (body.inlineSide || view.reviewDrawerOpen) : view.sideOpen
-                x: body.width - width
-                width: body.inlineSide ? view.clampSideWidth(view.sideWidth, body.width)
+                parent: view.reviewMode ? body : contextPanel
+                visible: view.reviewMode ? (body.inlineSide || view.reviewDrawerOpen) : contextPanel.materialHeight > 0
+                x: view.reviewMode ? body.width - width : 0
+                y: view.reviewMode ? 0 : contextPanel.height - height
+                width: !view.reviewMode ? contextPanel.width : body.inlineSide ? view.clampSideWidth(view.sideWidth, body.width)
                        : Math.min(view.sideWidth, body.width - 34)
-                height: body.height
-                radius: 14; color: "#F9FBF8"; border.color: "#E2E9E1"
+                height: view.reviewMode ? body.height : contextPanel.materialHeight
+                clip: true
+                radius: view.reviewMode ? 14 : 0; color: view.reviewMode ? "#F9FBF8" : "transparent"
+                border.color: view.reviewMode ? "#E2E9E1" : "transparent"
+                Rectangle { visible: !view.reviewMode; x: 16; width: parent.width - 32; height: 1; color: "#E2E9E1" }
                 Rectangle { x: 0; width: 3; height: parent.height; radius: 2
-                    color: sideResize.containsMouse || sideResize.pressed ? view.themeAccent : "transparent" }
+                    color: view.reviewMode && (sideResize.containsMouse || sideResize.pressed) ? view.themeAccent : "transparent" }
                 MouseArea { id: sideResize; x: 0; width: 14; height: parent.height; z: 6
-                    visible: body.inlineSide; hoverEnabled: true; cursorShape: Qt.SizeHorCursor
+                    visible: view.reviewMode && body.inlineSide; hoverEnabled: true; cursorShape: Qt.SizeHorCursor
                     preventStealing: true
                     onPositionChanged: function(mouse) {
                         if (pressed) {
@@ -621,7 +679,7 @@ Item {
                         AppButton { objectName: "addSidebarMaterialButton"
                             text: "+ 添加"; visible: !view.reviewMode && view.sideMode !== "ai"
                             onClicked: editorWritingMaterials.openAdd() }
-                        AppButton { visible: !body.inlineSide; text: "收起"; flat: true
+                        AppButton { visible: view.reviewMode && !body.inlineSide; text: "收起"; flat: true
                             onClicked: { if (view.reviewMode) view.reviewDrawerOpen = false; else view.setSide(false) } }
                     }
                     ColumnLayout { Layout.fillWidth: true; Layout.fillHeight: true
@@ -662,6 +720,7 @@ Item {
                                     writer.updateMaterial(id, material.meaning || "", material.usage || "",
                                                           material.example || "", "")
                                     writer.updateMaterialRelated(id, material.related || "")
+                                    writer.updateMaterialContext(id, material.scenario || "", material.caution || "")
                                 }
                             }
                         }
@@ -741,11 +800,16 @@ Item {
         }
     }
     WritingComparison {
+        id: comparisonPane
         anchors.fill:parent; visible:view.comparisonMode && !view.libraryMode && !view.notesMode
         title:writer.current.title || "作文"
         review:writer.current.review || ({})
+        customModel:writer.current.custom_model || ""
         currentText:writer.current.text || ""
         onBackRequested:view.comparisonMode=false
+        onEditModelRequested: function(text) {
+            customModelInput.text = text; customModelPopup.open()
+        }
         onNoteRequested:function(source){view.showSelectionNote(source)}
         onSelectionCleared:function(source){view.clearSelectionNote(source)}
     }

@@ -17,7 +17,6 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-import av
 from PySide6.QtCore import QFile, QObject, Property, QProcess, QThread, QUrl, Signal, Slot
 
 from enrich_job import MODEL, TRANSLATION_MODEL, ModelResponseError, explain, translate, validate_analysis
@@ -34,10 +33,14 @@ REMOVED_PROJECTS = DATA / "removed-projects"
 
 
 def inspect_media(path: Path) -> tuple[bool, float]:
-    with av.open(str(path)) as container:
-        has_audio = any(stream.type == "audio" for stream in container.streams)
-        has_video = any(stream.type == "video" for stream in container.streams)
-        duration = max(0.0, (container.duration or 0) / 1_000_000)
+    import av
+    try:
+        with av.open(str(path)) as container:
+            has_audio = any(stream.type == "audio" for stream in container.streams)
+            has_video = any(stream.type == "video" for stream in container.streams)
+            duration = max(0.0, (container.duration or 0) / 1_000_000)
+    except av.error.FFmpegError as exc:
+        raise OSError(str(exc)) from exc
     if not has_audio:
         raise ValueError("文件没有音轨，无法用于精听")
     return has_video, duration
@@ -104,7 +107,7 @@ class EnrichmentThread(QThread):
                     route = read_settings()
                     model = (route["cloud_model"] if route["translation_backend"] == "cloud"
                              else TRANSLATION_MODEL)
-                    analysis = {"_task": "translation", "translation": translate(job["text"], job["language"]),
+                    analysis = {"_task": "translation", "translation": translate(job["text"], job["language"], job.get("context")),
                                 "translation_model": model}
                 else:
                     analysis = explain(job["text"], job["language"])
@@ -389,7 +392,7 @@ class StudyBridge(QObject):
                     archived.replace(project_path)
                     if was_active:
                         self._load_project(project_path)
-                except (OSError, ValueError, KeyError, TypeError, av.error.FFmpegError) as recovery_error:
+                except (OSError, ValueError, KeyError, TypeError) as recovery_error:
                     self._status = f"移除失败，学习记录保留在 {archived}；恢复项目失败：{recovery_error}"
                     self.refreshProjects()
                     self.stateChanged.emit()
@@ -410,7 +413,7 @@ class StudyBridge(QObject):
             return
         try:
             self._load_project(project_path)
-        except (OSError, ValueError, KeyError, TypeError, av.error.FFmpegError) as exc:
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             self._status = f"打开项目失败：{exc}"
             self.stateChanged.emit()
 
@@ -432,7 +435,7 @@ class StudyBridge(QObject):
                 atomic_json(project_path, project)
             self.refreshProjects()
             self._status = "下载已加入资料库；可稍后打开并转写。"
-        except (OSError, ValueError, av.error.FFmpegError) as exc:
+        except (OSError, ValueError) as exc:
             self._status = f"文件已下载，但加入资料库失败：{exc}"
         self.stateChanged.emit()
 
@@ -612,7 +615,7 @@ class StudyBridge(QObject):
             self._navigation_time = 0.0
             local = QUrl(url).toLocalFile() if url.startswith("file:") else url
             self._open_media_path(Path(local))
-        except (OSError, ValueError, KeyError, av.error.FFmpegError) as exc:
+        except (OSError, ValueError, KeyError) as exc:
             self._status = f"导入失败：{exc}"
             self.stateChanged.emit()
 
@@ -692,6 +695,26 @@ class StudyBridge(QObject):
             self._active_index = index
             self._active_word = word
             self.stateChanged.emit()
+
+    @Slot(result=bool)
+    def copyCurrentSentence(self) -> bool:
+        from PySide6.QtGui import QGuiApplication
+        if not self._project.get("segments"):
+            return False
+        sentence = self.currentSentence
+        analysis = sentence.get("analysis", {})
+        sections = ["原文\n" + sentence["text"]]
+        translation = sentence.get("translation") or analysis.get("translation", "")
+        if translation:
+            sections.append("译文\n" + translation)
+        if analysis.get("grammar"):
+            sections.append("语法解析\n" + analysis["grammar"])
+        vocabulary = [str(v.get("surface", "")) + "：" + str(v.get("meaning", ""))
+                      for v in analysis.get("vocabulary", []) if v.get("surface")]
+        if vocabulary:
+            sections.append("词汇\n" + "\n".join(vocabulary))
+        QGuiApplication.clipboard().setText("\n\n".join(sections))
+        return True
 
     @Slot()
     def toggleLoop(self) -> None:
@@ -854,6 +877,8 @@ class StudyBridge(QObject):
                     not all_sentences or (not analysis.get("grammar") and not analysis.get("vocabulary")))
             if needed:
                 jobs.append({"index": i, "text": segment["text"], "task": task,
+                             "context": {"previous": segments[i-1]["text"] if i else "",
+                                         "following": segments[i+1]["text"] if i+1 < len(segments) else ""},
                              "language": self._project.get("language", "ja")})
         if not jobs:
             self._status = "没有需要解析的句子。"

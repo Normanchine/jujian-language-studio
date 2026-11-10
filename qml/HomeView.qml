@@ -39,7 +39,7 @@ Item {
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollBar {
             id: homeScroll
-            policy: ScrollBar.AsNeeded; width: 8
+            policy: ScrollBar.AlwaysOff; width: 8
             background: Item { }
             contentItem: Rectangle { implicitWidth: 6; radius: 3
                 color: homeScroll.pressed ? "#87998C" : "#B8C7BC" }
@@ -51,6 +51,7 @@ Item {
             Rectangle {
                 width: parent.width; height: downloads.ready ? 306 : 160
                 radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
+                HomeAmbience { anchors.fill: parent; area: "hero" }
                 Image {
                     x: 8; y: 7; width: 116; height: 116
                     source: "../assets/doraemon-reading.png"
@@ -135,6 +136,7 @@ Item {
                     spacing: 18
                     Rectangle {
                         width: parent.width; height: 245; radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
+                        HomeAmbience { anchors.fill: parent; area: "video" }
                         Text { x: 18; y: 15; text: "最近视频"; color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold }
                         AppButton { anchors.right: parent.right; anchors.rightMargin: 16; y: 8
                             text: "查看全部"; flat: true; onClicked: home.openLibrary() }
@@ -170,6 +172,7 @@ Item {
                     }
                     Rectangle {
                         width: parent.width; height: 226; radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
+                        HomeAmbience { anchors.fill: parent; area: "audio" }
                         Text { x: 18; y: 15; text: "最近音频"; color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold }
                         AppButton { anchors.right: parent.right; anchors.rightMargin: 16; y: 8
                             text: "查看全部"; flat: true; onClicked: home.openLibrary() }
@@ -204,6 +207,7 @@ Item {
                 Rectangle {
                     width: parent.width >= 720 ? parent.width - Math.floor((parent.width - 18) * 0.63) - 18 : parent.width
                     height: 489; radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
+                    HomeAmbience { anchors.fill: parent; area: "writing" }
                     Text { x: 18; y: 15; text: "最近作文"; color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold }
                     AppButton { anchors.right: parent.right; anchors.rightMargin: 16; y: 8
                         text: "查看全部"; flat: true; onClicked: home.openWriting() }

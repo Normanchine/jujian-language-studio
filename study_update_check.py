@@ -8,7 +8,10 @@ def check_updates(engine, window, writer, reading, captures):
     from PySide6.QtQuick import QQuickWindow
     from PySide6.QtTest import QTest
     quick=shiboken6.wrapInstance(shiboken6.getCppPointer(window)[0],QQuickWindow)
+    # Materialize the lazy pages before checking their existing controls.
+    window.setProperty('page','writing'); QTest.qWait(40)
     view=window.findChild(QObject,'writingView')
+    window.setProperty('page','reading'); QTest.qWait(40)
     home=window.findChild(QObject,'readingHome')
     def js(code,obj):
         expression=QQmlExpression(QQmlEngine.contextForObject(obj),obj,code)

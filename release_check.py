@@ -57,6 +57,9 @@ def main():
     assert settings.save(str(data / "downloads"), "", "", "local", "local", "local")
     assert model_settings.read_settings()["shortcut_next"] == "Alt+Right"
     engine = QQmlApplicationEngine()
+    from core.window_shell import WindowActions
+    window_actions = WindowActions(app)
+    engine.rootContext().setContextProperty("windowActions", window_actions)
     errors = []
     engine.warnings.connect(lambda values: errors.extend(str(value.toString()) for value in values))
     for name, value in {"study": bridge, "settings": settings, "writer": writer, "downloads": downloads, "reading":reading}.items():
@@ -65,7 +68,12 @@ def main():
     engine.load(QUrl.fromLocalFile(str(study.ASSETS / "qml/Main.qml")))
     assert engine.rootObjects(), errors
     window = engine.rootObjects()[0]
-    assert window.property("appVersion") == "0.2.9"
+    assert window.property("appVersion") == "0.2.12"
+    window_actions.attach(window, False)
+    from app import use_windows_window_effects
+    use_windows_window_effects(window)
+    window.show()
+    assert len(settings.themeOptions) == 14
     quick = shiboken6.wrapInstance(shiboken6.getCppPointer(window)[0], QQuickWindow)
     player = window.findChild(QMediaPlayer, "mediaPlayer")
     frames = []
@@ -106,6 +114,10 @@ def main():
             QTest.qWait(120)
             player.pause()
             app.processEvents()
+            from PySide6.QtGui import QGuiApplication
+            QTest.keyClick(quick, Qt.Key_C, Qt.ControlModifier | Qt.ShiftModifier)
+            assert bridge.currentSentence["text"] in QGuiApplication.clipboard().text()
+            assert player.playbackState() == QMediaPlayer.PausedState
             capture("split-wide")
             reading = window.findChild(QObject, "readingPane")
             assert reading.property("height") >= 200, reading.property("height")
@@ -206,6 +218,10 @@ def main():
             assert not unexpected, unexpected
             from study_update_check import check_updates
             check_updates(engine,window,writer,reading,captures)
+            from writing_update_check import check_writing_updates
+            check_writing_updates(engine,window,writer,captures)
+            from reading_update_check import check_reading_updates
+            check_reading_updates(engine,window,reading,settings,captures)
             assert not errors, errors
             print("real EOF, keys, 12 cards, vertical divider, saved highlight delay, wheel/follow, card seek, normal/narrow: OK", flush=True)
             app.exit(0)
@@ -215,6 +231,8 @@ def main():
     QTimer.singleShot(1000, run_checks)
     QTimer.singleShot(30000, lambda: app.exit(3))
     code = app.exec()
+    if window_actions.frame:
+        app.removeNativeEventFilter(window_actions.frame)
     player.stop(); player.setSource(QUrl())
     engine.deleteLater(); app.processEvents()
     temporary.cleanup()

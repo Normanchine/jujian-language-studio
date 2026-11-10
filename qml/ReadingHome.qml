@@ -470,48 +470,95 @@ Item {
                         delegate: Item {
                             id: entry; required property var modelData; required property int index
                             objectName: "readingRow_" + modelData.id
-                            width: articles.width; height: sectionHeight + (home.compact ? 118 : 108)
+                            width: articles.width; height: sectionHeight + articleCard.height + 8
                             property bool newGroup: index === 0 || home.results[index-1].setId !== modelData.setId
                             property real sectionHeight: newGroup ? 30 : 0
+                            property bool readComplete: (home.readingRecords[modelData.id] || {}).readComplete === true
                             Text { visible: entry.newGroup; y: 6; text: entry.modelData.group + "  /  " + entry.modelData.setTitle
                                 color: home.muted; font.pixelSize: 11; width: parent.width - 14; elide: Text.ElideRight }
                             Rectangle {
-                                x: 0; y: entry.sectionHeight; width: parent.width - 10; height: parent.height - entry.sectionHeight - 6
-                                radius: 9; color: rowHover.hovered ? settings.palette.selection : "transparent"
+                                id: articleCard; objectName: "readingCard_" + entry.modelData.id
+                                x: 0; y: entry.sectionHeight; width: parent.width - 10; height: cardContent.implicitHeight + 28
+                                radius: 9; color: rowHover.hovered ? settings.palette.selection : entry.readComplete ? settings.palette.page : "transparent"
+                                property bool hovered: rowHover.hovered
                                 HoverHandler { id: rowHover }
+                                Rectangle { visible: entry.readComplete; x: 0; y: 15; width: 3; height: parent.height - 30; radius: 1.5; color: home.accent; opacity: 0.45 }
                                 ColumnLayout {
-                                    anchors.fill: parent; anchors.margins: 10; spacing: 7
+                                    id: cardContent
+                                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                    anchors.margins: 14; spacing: 8
                                     RowLayout { Layout.fillWidth: true; spacing: 8
                                         Text { text: (entry.modelData.number < 10 ? "0" : "") + entry.modelData.number; color: home.muted; font.pixelSize: 12 }
                                         Text { text: entry.modelData.title; color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold
+                                            objectName: "readingTitle_" + entry.modelData.id; opacity: entry.readComplete ? 0.52 : 1
                                             Layout.fillWidth: true; elide: Text.ElideRight }
-                                        ReadingCompletionCheck {
-                                            objectName: "readingArticleComplete_" + entry.modelData.id
-                                            checked: (home.readingRecords[entry.modelData.id] || {}).readComplete === true
-                                            onClicked: home.updateRecord(entry.modelData.id, {readComplete: !(home.readingRecords[entry.modelData.id] || {}).readComplete})
-                                        }
-                                        Text { visible: !home.compact; text: entry.modelData.mock ? "模拟条目" : entry.modelData.sourceKind==='personal_practice' ? '个人阅读题' : entry.modelData.sourceKind==='toefl_personal_materials' ? (entry.modelData.hasQuestions===false ? "精读正文" : "已核单选") : (entry.modelData.sourceKind==='personal_import' || entry.modelData.sourceKind==='user_paste') ? "个人文章" : "自编演示"; color: home.muted; font.pixelSize: 10 }
                                         AppButton { objectName: "readingFavorite_" + entry.modelData.id; text: home.isFavorite(entry.modelData) ? "★" : "☆"
-                                            implicitWidth: 30; implicitHeight: 26; flat: true; onClicked: home.toggleFavorite(entry.modelData) }
+                                            implicitWidth: 28; implicitHeight: 28; flat: true; onClicked: home.toggleFavorite(entry.modelData) }
+                                        AppButton { objectName: "readingMore_" + entry.modelData.id; text: "···"; flat: true
+                                            visible: entry.modelData.sourceKind==='personal_import' || entry.modelData.sourceKind==='personal_practice'
+                                            implicitWidth: 28; implicitHeight: 28
+                                            Accessible.name: "文章选项"; ToolTip.visible: hovered; ToolTip.text: "文章选项"
+                                            onClicked: articleMenu.open()
+                                            Menu {
+                                                id: articleMenu; objectName: "readingArticleMenu_" + entry.modelData.id
+                                                popupType: Popup.Item
+                                                width: 156; padding: 6; margins: 10
+                                                x: parent.width - width; y: parent.height + 6
+                                                component ArticleAction: MenuItem {
+                                                    id: action
+                                                    implicitHeight: 36; leftPadding: 12; rightPadding: 12
+                                                    hoverEnabled: true
+                                                    contentItem: Text {
+                                                        text: action.text; color: home.ink
+                                                        font.family: "Microsoft YaHei UI"; font.pixelSize: 12
+                                                        verticalAlignment: Text.AlignVCenter
+                                                    }
+                                                    background: Rectangle {
+                                                        x: 1; y: 1; width: action.width - 2; height: action.height - 2
+                                                        radius: 6
+                                                        color: action.highlighted || action.hovered ? settings.palette.selection : "transparent"
+                                                    }
+                                                }
+                                                background: Rectangle {
+                                                    radius: 10; color: settings.palette.surface
+                                                    border.color: Qt.rgba(home.ink.r, home.ink.g, home.ink.b, 0.12)
+                                                    Rectangle {
+                                                        z: -1; x: 0; y: 3; width: parent.width; height: parent.height
+                                                        radius: 10; color: "#0C263D30"
+                                                    }
+                                                }
+                                                ArticleAction { objectName: "readingManage_" + entry.modelData.id; text: "管理文章…"
+                                                    visible: entry.modelData.sourceKind==='personal_import'; height: visible ? implicitHeight : 0
+                                                    onTriggered: { home.managedArticle=entry.modelData; manageArticlePopup.open(); } }
+                                                ArticleAction { objectName: "readingRemovePaper_" + entry.modelData.id; text: "移除阅读题…"
+                                                    visible: entry.modelData.sourceKind==='personal_practice'; height: visible ? implicitHeight : 0
+                                                    onTriggered: { home.managedArticle=entry.modelData; removePaperPopup.open(); } }
+                                            }
+                                        }
                                     }
                                     Text { text: home.snippet(entry.modelData); color: home.muted; font.pixelSize: 12
+                                        opacity: entry.readComplete ? 0.58 : 1
                                         Layout.fillWidth: true; maximumLineCount: 1; elide: Text.ElideRight }
-                                    Item { Layout.fillWidth: true; implicitHeight: 36
-                                        Column { anchors.left: parent.left; anchors.right: actions.left; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; spacing: 5
+                                    Item { Layout.fillWidth: true; implicitHeight: Math.max(32, progressColumn.implicitHeight)
+                                        Column { id: progressColumn; anchors.left: parent.left; anchors.right: actions.left; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter; spacing: 5
+                                            Text { visible: !home.compact; width: parent.width; elide: Text.ElideRight
+                                                text: entry.modelData.mock ? "模拟条目" : entry.modelData.sourceKind==='personal_practice' ? '个人阅读题' : entry.modelData.sourceKind==='toefl_personal_materials' ? (entry.modelData.hasQuestions===false ? "精读正文" : "已核单选") : (entry.modelData.sourceKind==='personal_import' || entry.modelData.sourceKind==='user_paste') ? "个人文章" : "自编演示"
+                                                color: home.muted; font.pixelSize: 10 }
                                             ReadingProgress { width: parent.width; visible: entry.modelData.hasQuestions !== false
                                                 label: "练习"; value: home.practiceRatio(entry.modelData); tint: home.accent
                                                 detail: entry.modelData.pending ? (entry.modelData.answered || 0)+"/"+entry.modelData.questionCount+" 题" : entry.modelData.practice === "done" ? (entry.modelData.score ? "已完成 · " + entry.modelData.score : "已完成") : entry.modelData.practice === "progress" ? (entry.modelData.answered || 0) + "/" + (entry.modelData.questionCount || 5) + " 题" : "未开始" }
                                             Text { text: home.reviewLabel(entry.modelData); visible: text.length > 0; color: home.muted; font.pixelSize: 10 }
                                         }
-                                        Row { id: actions; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 7
+                                        Row { id: actions; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 8
+                                        ReadingCompletionCheck {
+                                            objectName: "readingArticleComplete_" + entry.modelData.id
+                                            checked: entry.readComplete
+                                            onClicked: home.updateRecord(entry.modelData.id, {readComplete: !entry.readComplete})
+                                        }
                                         AppButton { objectName: "readingPractice_"+entry.modelData.id; visible: entry.modelData.hasQuestions !== false; text: entry.modelData.pending || entry.modelData.practice === "progress" ? "继续练习" : entry.modelData.practice === "done" ? "复盘" : "练习"
-                                            flat: true; onClicked: home.openArticle(entry.modelData, "practice") }
-                                        AppButton { objectName: "readingIntensive_" + entry.modelData.id; text: "精读"
+                                            implicitHeight: 32; flat: true; onClicked: home.openArticle(entry.modelData, "practice") }
+                                        AppButton { objectName: "readingIntensive_" + entry.modelData.id; text: "精读 ›"; flat: true; implicitHeight: 32
                                             onClicked: home.openArticle(entry.modelData, "intensive") }
-                                        AppButton { objectName: "readingManage_" + entry.modelData.id; visible: entry.modelData.sourceKind==='personal_import'; text: "管理"; flat: true
-                                            onClicked: {home.managedArticle=entry.modelData; manageArticlePopup.open();} }
-                                        AppButton { objectName: "readingRemovePaper_" + entry.modelData.id; visible: entry.modelData.sourceKind==='personal_practice'; text: "移除"; flat: true
-                                            onClicked: {home.managedArticle=entry.modelData; removePaperPopup.open();} }
                                         }
                                     }
                                 }

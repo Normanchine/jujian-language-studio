@@ -73,15 +73,24 @@ def validate_analysis(raw: object, source: str, language: str = "ja") -> dict:
             "source_text": source, "translation": translation, "translation_model": translation_model}
 
 
-def translate(text: str, language: str = "ja") -> str:
+def translate(text: str, language: str = "ja", context: dict | None = None) -> str:
     source_language = "英语" if language == "en" else "日语"
     english_note = ("英语 wish + 过去完成时表示对过去事实的遗憾，应译为‘要是当时……就好了’。"
                     if language == "en" else "")
+    dialogue_note = ("日语口语的‘〜てくれない（か）’常是请求，应按语境译为‘能不能帮我……’，不能机械译成‘不做也行’。"
+                     "一张字幕可能包含多人的对话；若明显有请求与应答，按话轮分行翻译，不要把不同人的立场合成一个人的话。"
+                     "转写可能漏标点或有误字；不要为可疑文字编造场景或擅自补充事实。"
+                     if language == "ja" else "")
+    reference = ""
+    if context:
+        reference = "\n以下相邻字幕仅用于理解语境，不要翻译或混入当前译文：\n" + json.dumps(
+            {key: str(context.get(key, ""))[:400] for key in ("previous", "following")}, ensure_ascii=False)
     prompt = (
         f"你是{source_language}到简体中文的翻译助手。准确、自然地翻译下面的原句。"
         "保留原句的语气、否定、时态和不确定性；注意虚拟语气与对过去的遗憾，不能把未发生的事译成已发生；不要增添原文没有的信息。"
         + english_note
-        + "只返回 JSON，其中 translation 是整句中文译文。\n原句：" + text
+        + dialogue_note + reference
+        + "\n只返回 JSON，其中 translation 只含当前字幕的中文译文。\n当前字幕：" + text
     )
     from model_settings import read_settings
     if read_settings()["translation_backend"] == "cloud":

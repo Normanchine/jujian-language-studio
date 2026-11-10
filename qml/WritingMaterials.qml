@@ -32,11 +32,11 @@ Item {
         return item.kind === "grammar" || String(item.expression || "").trim().split(/\s+/).length > 1
     }
     function guidance(item) {
-        var raw = libraryView.isPhrase(item) ? String(item.related || "") : String(item.usage || "")
+        var raw = String(item.usage || item.related || "")
         raw = raw.trim()
-        if (!raw || raw.length > 280 || /\d+[.、]|不及物动词|状语|直接这样用/.test(raw)) return []
+        if (!raw || raw.length > 500 || /\d+[.、]|不及物动词|状语|直接这样用/.test(raw)) return []
         return raw.split(/\n+/).map(function(line) { return line.trim() })
-                  .filter(function(line) { return line.length > 0 && line.length < 90 }).slice(0, 4)
+                  .filter(function(line) { return line.length > 0 && line.length < 160 }).slice(0, 4)
     }
     function exampleText(value) {
         var text = String(value || "").trim()
@@ -68,7 +68,7 @@ Item {
                 if (query && (generated.expression + " " + (generated.meaning || ""))
                         .toLowerCase().indexOf(query) < 0) continue
                 result.push({source: "ai", expression: generated.expression,
-                             kind: generated.kind, meaning: generated.meaning,
+                             kind: generated.kind, meaning: generated.meaning, scenario: generated.scenario, caution: generated.caution,
                              usage: generated.usage, related: generated.related, example: generated.example})
             }
         }
@@ -84,7 +84,7 @@ Item {
                     .toLowerCase().indexOf(query) < 0) continue
             result.push({source: "mine", id: item.id, language: item.language,
                          kind: item.kind, expression: item.expression,
-                         meaning: item.meaning, usage: item.usage, related: item.related,
+                         meaning: item.meaning, scenario: item.scenario, caution: item.caution, usage: item.usage, related: item.related,
                          example: item.example, favorite: item.favorite,
                          essay_id: item.essay_id, context: item.context, note: item.note})
         }
@@ -101,17 +101,30 @@ Item {
         var item = currentItem()
         if (!item) return
         meaningField.text = item.meaning || ""
+        scenarioField.text = item.scenario || ""
+        cautionField.text = item.caution || ""
         usageField.text = item.usage || ""
         relatedField.text = item.related || ""
         exampleField.text = item.example || ""
         noteField.text = item.note || ""
         detailPopup.open()
     }
+    function saveDetail() {
+        // Saving emits library updates, which reload the form. Capture every field first.
+        var fields = {meaning: meaningField.text, usage: usageField.text, example: exampleField.text,
+                      note: noteField.text, related: relatedField.text, scenario: scenarioField.text,
+                      caution: cautionField.text}
+        writer.updateMaterial(libraryView.editingId, fields.meaning, fields.usage, fields.example, fields.note)
+        writer.updateMaterialRelated(libraryView.editingId, fields.related)
+        writer.updateMaterialContext(libraryView.editingId, fields.scenario, fields.caution)
+    }
     function reloadDetail() {
         if (!detailPopup.opened) return
         var item = currentItem()
         if (!item) return
         meaningField.text = item.meaning || ""
+        scenarioField.text = item.scenario || ""
+        cautionField.text = item.caution || ""
         usageField.text = item.usage || ""
         relatedField.text = item.related || ""
         exampleField.text = item.example || ""
@@ -205,7 +218,11 @@ Item {
                                 visible: materialCard.expanded
                                 Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1
                                     color: "#E5EAE4" }
-                                Text { text: libraryView.isPhrase(modelData) ? "相近表达" : "常用搭配"
+                                Text { text: modelData.meaning || ""; visible: !!modelData.meaning
+                                    Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#637268"; font.pixelSize: 12 }
+                                Text { objectName: "materialScenario"; text: "适用场景 · " + (modelData.scenario || ""); visible: !!modelData.scenario
+                                    Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#526A59"; font.pixelSize: 12 }
+                                Text { text: modelData.usage ? "用法 / 搭配" : "相近表达"
                                     color: "#526A59"; font.pixelSize: 11; font.weight: Font.DemiBold }
                                 Repeater { model: libraryView.guidance(modelData)
                                     delegate: Rectangle {
@@ -219,12 +236,14 @@ Item {
                                     }
                                 }
                                 Text { visible: libraryView.guidance(modelData).length === 0
-                                    text: modelData.source === "ai"
-                                        ? "暂无相近表达。收录后可点 AI 整理补充。"
-                                        : libraryView.isPhrase(modelData)
-                                          ? "暂无相近表达，可点 AI 整理补充。"
-                                          : "暂无简短搭配，可点 AI 整理补充。"
-                                    Layout.fillWidth: true; wrapMode: Text.Wrap
+                                    text: "暂无简短用法，可收录后整理补充。"
+                                    Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#718277"; font.pixelSize: 11 }
+                                Text { objectName: "materialExample"; text: libraryView.exampleText(modelData.example || ""); visible: !!modelData.example
+                                    Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#335843"; font.pixelSize: 13 }
+                                Text { objectName: "materialCaution"; text: "注意 · " + (modelData.caution || ""); visible: !!modelData.caution
+                                    Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#876443"; font.pixelSize: 11 }
+                                Text { visible: !!modelData.usage && !!modelData.related
+                                    text: "相近表达 · " + (modelData.related || ""); Layout.fillWidth: true; wrapMode: Text.Wrap
                                     color: "#718277"; font.pixelSize: 11 }
                                 Text { text: modelData.note || ""; visible: modelData.source === "mine" && !!modelData.note
                                     Layout.fillWidth: true; wrapMode: Text.Wrap
@@ -322,17 +341,25 @@ Item {
                     TextArea { id: meaningField; width: parent.width; height: 86; wrapMode: TextEdit.Wrap
                         placeholderText: "核心含义与常见其他含义"; font.pixelSize: 12
                         background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: "#DCE4DE" } }
+                    Text { text: "适用场景"; color: "#26342C"; font.pixelSize: 12; font.bold: true }
+                    TextArea { id: scenarioField; objectName: "materialScenarioInput"; width: parent.width; height: 60; wrapMode: TextEdit.Wrap
+                        placeholderText: "什么时候适合用这个表达"; font.pixelSize: 12
+                        background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: "#DCE4DE" } }
                     Text { text: "用法与搭配"; color: "#26342C"; font.pixelSize: 12; font.bold: true }
                     TextArea { id: usageField; width: parent.width; height: 100; wrapMode: TextEdit.Wrap
                         placeholderText: "接续、搭配、语域或易混淆之处"; font.pixelSize: 12
                         background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: "#DCE4DE" } }
                     Text { text: "相近表达（每行一条）"; color: "#26342C"; font.pixelSize: 12; font.bold: true }
-                    TextArea { id: relatedField; width: parent.width; height: 90; wrapMode: TextEdit.Wrap
+                    TextArea { id: relatedField; objectName: "materialRelatedInput"; width: parent.width; height: 90; wrapMode: TextEdit.Wrap
                         placeholderText: "短语或语法结构的相近说法"; font.pixelSize: 12
                         background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: "#DCE4DE" } }
                     Text { text: "例句"; color: "#26342C"; font.pixelSize: 12; font.bold: true }
                     TextArea { id: exampleField; width: parent.width; height: 80; wrapMode: TextEdit.Wrap
                         placeholderText: "写一句自然的例句"; font.pixelSize: 12
+                        background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: "#DCE4DE" } }
+                    Text { text: "易错提醒"; color: "#26342C"; font.pixelSize: 12; font.bold: true }
+                    TextArea { id: cautionField; objectName: "materialCautionInput"; width: parent.width; height: 60; wrapMode: TextEdit.Wrap
+                        placeholderText: "必要时记一条使用边界（可留空）"; font.pixelSize: 12
                         background: Rectangle { radius: 8; color: "#FAFBFA"; border.color: "#DCE4DE" } }
                     Text { text: "我的笔记"; color: "#26342C"; font.pixelSize: 12; font.bold: true }
                     TextArea { id: noteField; width: parent.width; height: 100; wrapMode: TextEdit.Wrap
@@ -349,15 +376,11 @@ Item {
                 AppButton { objectName: "materialEnrichButton"
                     text: writer.materialBusy ? "补充中…" : "AI 补充用法"; enabled: !writer.materialBusy
                     onClicked: {
-                        writer.updateMaterial(libraryView.editingId, meaningField.text, usageField.text,
-                            exampleField.text, noteField.text)
-                        writer.updateMaterialRelated(libraryView.editingId, relatedField.text)
+                        libraryView.saveDetail()
                         writer.enrichMaterial(libraryView.editingId)
                     } }
                 AppButton { text: "保存并关闭"; primary: true; onClicked: {
-                    writer.updateMaterial(libraryView.editingId, meaningField.text, usageField.text,
-                        exampleField.text, noteField.text)
-                    writer.updateMaterialRelated(libraryView.editingId, relatedField.text)
+                    libraryView.saveDetail()
                     detailPopup.close()
                 } }
             }

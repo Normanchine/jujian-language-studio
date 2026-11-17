@@ -11,22 +11,24 @@ import os
 import re
 import copy
 import time
-from threading import Event
+from threading import Event, Thread
 from bisect import bisect_right
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
+from functools import lru_cache
 
 from PySide6.QtCore import QFile, QObject, Property, QProcess, QThread, QUrl, Signal, Slot
 
 from enrich_job import MODEL, TRANSLATION_MODEL, ModelResponseError, explain, translate, validate_analysis
 from model_settings import read_settings
-from linguistics import display_tokens
+from linguistics import display_tokens, cached_display_tokens
 
 
 from core.paths import ROOT, ASSETS, DATA
 from core.storage import atomic_json, atomic_text
 from core.listening_model import SentenceListModel
+from core.subtitle_timing import repair_collapsed_repetitions
 PROJECTS = DATA / "projects"
 LAST = DATA / "last-project.txt"
 REMOVED_PROJECTS = DATA / "removed-projects"
@@ -46,7 +48,54 @@ def inspect_media(path: Path) -> tuple[bool, float]:
     return has_video, duration
 
 
-def validate_segments(raw: object, duration: float, language: str = "ja") -> list[dict]:
+@lru_cache(maxsize=64)
+def _inspect_unchanged_media(path: str, size: int, mtime_ns: int):
+    return inspect_media(Path(path))
+
+
+def read_project(path: Path) -> dict:
+    """Load/validate off the UI thread; reuse only stat-matched probe results."""
+    project = json.loads(path.read_text(encoding='utf-8'))
+    media = Path(project['media_path'])
+    info = media.stat()
+    if not media.is_file():
+        raise FileNotFoundError(f'媒体文件不存在：{media}')
+    fingerprint = {'size': info.st_size, 'mtime_ns': info.st_mtime_ns}
+    probe = project.get('media_probe', {})
+    if (isinstance(probe, dict) and all(probe.get(k) == v for k, v in fingerprint.items())
+            and type(probe.get('has_video')) is bool
+            and isinstance(probe.get('duration'), (int, float))
+            and math.isfinite(probe['duration']) and probe['duration'] > 0):
+        has_video, duration = probe['has_video'], probe['duration']
+    else:
+        has_video, duration = _inspect_unchanged_media(str(media.resolve()), info.st_size, info.st_mtime_ns)
+    project.update(has_video=has_video, duration=duration,
+                   media_probe={**fingerprint, 'has_video': has_video, 'duration': duration})
+    language = project.get('language', 'ja')
+    project['language'] = language if language in {'ja', 'en'} else 'ja'
+    segments, repairs = repair_collapsed_repetitions(project.get('segments', []), project['language'])
+    project['segments'] = validate_segments(segments, duration, project['language'], reuse_tokens=True)
+    if repairs:
+        project.setdefault('subtitle_timing_repairs', []).extend(repairs)
+    return project
+
+
+class ProjectLoadThread(QThread):
+    ready = Signal(str, object)
+    failed = Signal(str, str)
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    def run(self):
+        try:
+            self.ready.emit(str(self.path), read_project(self.path))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            self.failed.emit(str(self.path), str(exc))
+
+
+def validate_segments(raw: object, duration: float, language: str = "ja", *, reuse_tokens=False) -> list[dict]:
     if not isinstance(raw, list):
         raise ValueError("字幕数据缺少 segments 列表")
     segments: list[dict] = []
@@ -65,11 +114,16 @@ def validate_segments(raw: object, duration: float, language: str = "ja") -> lis
             w_start, w_end = float(word["start"]), float(word["end"])
             if math.isfinite(w_start) and math.isfinite(w_end) and start - 0.02 <= w_start <= w_end <= end + 0.02:
                 words.append({"start": w_start, "end": w_end, "text": str(word.get("text", ""))})
+        tokens = cached_display_tokens(text, words, item.get('tokens'), language) if reuse_tokens else None
+        if tokens is None:
+            tokens = display_tokens(text, words, language)
         analysis = item.get("analysis", {})
         if not isinstance(analysis, dict) or analysis.get("source_text") != text:
             analysis = {}
         else:
-            analysis = validate_analysis(analysis, text, language)
+            # Analysis vocabulary uses the same dictionary categories. Reusing
+            # the validated display tokens avoids a second cold dictionary load.
+            analysis = validate_analysis(analysis, text, language, source_tokens=tokens if language == 'ja' else None)
         suggestion = str(item.get("suggestion", ""))
         if language == "ja" and not item.get("reviewed") and re.search(r"(?:何|[0-9０-９一二三四五六七八九十])回", text):
             context = "".join(str(neighbor.get("text", "")) for neighbor in raw[max(0, number - 3):number + 1]
@@ -80,7 +134,7 @@ def validate_segments(raw: object, duration: float, language: str = "ja") -> lis
             "start": round(start, 3), "end": round(end, 3), "text": text,
             "translation": str(item.get("translation", "")),
             "reviewed": bool(item.get("reviewed", False)), "words": words,
-            "tokens": display_tokens(text, words, language), "analysis": analysis,
+            "tokens": tokens, "analysis": analysis,
             "suggestion": suggestion,
         })
         previous_end = end
@@ -184,7 +238,102 @@ class StudyBridge(QObject):
         self._split_thread = None
         self._splitting = False
         self._playback_position_ms = 0
+        self._open_thread = None
+        self._requested_project = None
+        self._closing = False
+        self._media_warmup = None
+        from recording_service import RecordingBridge
+        self._recorder = RecordingBridge(self)
         self.refreshProjects()
+
+    @Property(QObject, constant=True)
+    def recorder(self):
+        return self._recorder
+
+    @Slot()
+    def preparePlayback(self):
+        """Warm the media reader after the first frame, outside the GUI thread."""
+        if self._media_warmup is not None or self._closing:
+            return
+        def warm():
+            try:
+                import av
+            except (ImportError, OSError):
+                pass  # An actual open reports actionable errors normally.
+        self._media_warmup = Thread(target=warm, daemon=True)
+        self._media_warmup.start()
+
+    @Property('QVariantList', notify=projectsChanged)
+    def libraryFolders(self):
+        from core.library_folders import read_folders
+        try:
+            return read_folders(DATA / 'library-folders.json')
+        except (OSError, ValueError, TypeError):
+            return []
+
+    @Slot(str, str, result=str)
+    def createLibraryFolder(self, language, name):
+        from core.library_folders import create_folder
+        try:
+            key = create_folder(DATA / 'library-folders.json', language, name)
+            self._status = '资料库子文件夹已创建。'
+            self.projectsChanged.emit()
+            self.stateChanged.emit()
+            return key
+        except (OSError, ValueError, TypeError) as exc:
+            self._status = f'创建文件夹失败：{exc}'
+            self.stateChanged.emit()
+            return ''
+
+    def validateRecordingFolder(self, language, folder):
+        from core.library_folders import read_folders
+        if folder and not any(item['id'] == folder and item['language'] == language
+                              for item in read_folders(DATA / 'library-folders.json')):
+            raise ValueError('所选文件夹不存在或不属于当前语言，请重新选择')
+
+    @Slot(str, str, str, result=bool)
+    def setProjectLocation(self, path, language, folder):
+        if self._busy or self._enriching:
+            return False
+        try:
+            if language not in ('en', 'ja'):
+                raise ValueError('语言分类无效')
+            self.validateRecordingFolder(language, folder)
+            project_path = self._library_project(path)
+            if not project_path:
+                raise ValueError('资料不存在')
+            project = json.loads(project_path.read_text(encoding='utf-8'))
+            project.update(library_language=language, library_folder_id=folder)
+            atomic_json(project_path, project)
+            if project_path == self._project_file:
+                self._project.update(library_language=language, library_folder_id=folder)
+            self.refreshProjects()
+            self._status = '资料分类已保存，字幕和学习进度已保留。'
+            self.stateChanged.emit()
+            return True
+        except (OSError, ValueError, TypeError) as exc:
+            self._status = f'分类未保存：{exc}'
+            self.stateChanged.emit()
+            return False
+
+    def registerRecording(self, path, title, language, folder, recording):
+        self.validateRecordingFolder(language, folder)
+        media = Path(path).resolve()
+        if media.parent != (DATA / 'recordings' / 'media').resolve() or media.stem != recording['id']:
+            raise ValueError('录音保存位置无效')
+        project_path = self._project_path(media)
+        if project_path.exists():
+            old = json.loads(project_path.read_text(encoding='utf-8'))
+            if old.get('recording', {}).get('id') != recording['id']:
+                raise ValueError('该音频已有其他学习记录，已阻止覆盖')
+        else:
+            has_video, duration = inspect_media(media)
+            atomic_json(project_path, dict(schema_version=1, language=language, library_language=language,
+                library_folder_id=folder, title=title, media_path=str(media), source='电脑录音',
+                media_origin='recording', has_video=has_video, duration=duration, segments=[],
+                playback_ms=0, recording=recording))
+        self.refreshProjects()
+        return str(project_path)
 
     def _project_path(self, media: Path) -> Path:
         digest = hashlib.sha256(str(media.resolve()).casefold().encode("utf-8")).hexdigest()[:20]
@@ -214,6 +363,7 @@ class StudyBridge(QObject):
     @Slot()
     def refreshProjects(self) -> None:
         items = []
+        folders = {item['id']: item for item in self.libraryFolders}
         for path in PROJECTS.glob("*.json"):
             if path.name.endswith(".bak.json"):
                 continue
@@ -240,6 +390,8 @@ class StudyBridge(QObject):
                     "video": bool(project.get("has_video", False)),
                     "language": "英语" if project.get("language") == "en" else "日语",
                     "libraryLanguage": "英语" if project.get("library_language", project.get("language")) == "en" else "日语",
+                    "folderId": project.get('library_folder_id', '') if project.get('library_folder_id') in folders else '',
+                    "folderName": folders.get(project.get('library_folder_id'), {}).get('name', '未分类'),
                     "favorite": bool(project.get("favorite", False)),
                     "durationMs": duration, "positionMs": position,
                     "progress": position / duration if duration else 0,
@@ -291,9 +443,13 @@ class StudyBridge(QObject):
         try:
             project = json.loads(project_path.read_text(encoding="utf-8"))
             project["library_language"] = language
+            if project.get('library_folder_id') and not any(item['id'] == project['library_folder_id']
+                    and item['language'] == language for item in self.libraryFolders):
+                project['library_folder_id'] = ''
             atomic_json(project_path, project)
             if project_path == self._project_file:
                 self._project["library_language"] = language
+                self._project['library_folder_id'] = project.get('library_folder_id', '')
             self._status = "已归入英语。" if language == "en" else "已归入日语。"
             self.refreshProjects()
             self.stateChanged.emit()
@@ -417,6 +573,53 @@ class StudyBridge(QObject):
             self._status = f"打开项目失败：{exc}"
             self.stateChanged.emit()
 
+    @Slot(str)
+    def requestOpenProject(self, path: str) -> None:
+        """Keep the event loop responsive and let the latest pending click win."""
+        if (self._busy and self._open_thread is None) or self._enriching or self._closing:
+            return
+        project_path = self._library_project(path)
+        if not project_path:
+            self._status = '项目不存在，请刷新资料库。'
+            self.stateChanged.emit()
+            return
+        self._requested_project = project_path
+        self._busy = True
+        self._status = '正在载入媒体和字幕…'
+        self.stateChanged.emit()
+        if self._open_thread is None:
+            self._start_project_load()
+
+    def _start_project_load(self):
+        self._open_thread = ProjectLoadThread(self._requested_project)
+        self._open_thread.ready.connect(self._project_loaded)
+        self._open_thread.failed.connect(self._project_load_failed)
+        self._open_thread.finished.connect(self._project_load_finished)
+        self._open_thread.start()
+
+    @Slot(str, object)
+    def _project_loaded(self, path, project):
+        if not self._closing and path == str(self._requested_project):
+            self._apply_project(Path(path), project)
+
+    @Slot(str, str)
+    def _project_load_failed(self, path, message):
+        if not self._closing and path == str(self._requested_project):
+            self._status = f'打开项目失败：{message}'
+            self.stateChanged.emit()
+
+    @Slot()
+    def _project_load_finished(self):
+        finished_path = self._open_thread.path
+        self._open_thread.deleteLater()
+        self._open_thread = None
+        if not self._closing and self._requested_project != finished_path:
+            self._start_project_load()
+        else:
+            self._requested_project = None
+            self._busy = False
+            self.stateChanged.emit()
+
     @Slot(str, str, str, str)
     def registerDownloaded(self, media_path: str, title: str, source: str, cover: str) -> None:
         try:
@@ -468,15 +671,10 @@ class StudyBridge(QObject):
         self.refreshProjects()
 
     def _load_project(self, path: Path) -> None:
-        project = json.loads(path.read_text(encoding="utf-8"))
-        media = Path(project["media_path"])
-        if not media.is_file():
-            raise FileNotFoundError(f"媒体文件不存在：{media}")
-        has_video, duration = inspect_media(media)
-        project["has_video"] = has_video
-        project["duration"] = duration
-        project["language"] = project.get("language", "ja") if project.get("language") in {"ja", "en"} else "ja"
-        project["segments"] = validate_segments(project.get("segments", []), duration, project["language"])
+        self._apply_project(path, read_project(path))
+
+    def _apply_project(self, path: Path, project: dict) -> None:
+        self._navigation_time = 0.0
         self._transcribe_language = "auto"
         self._project = project
         self._project_file = path
@@ -489,11 +687,11 @@ class StudyBridge(QObject):
 
     def _open_media_path(self, media: Path) -> None:
         media = media.resolve()
-        has_video, duration = inspect_media(media)
         path = self._project_path(media)
         if path.is_file():
             self._load_project(path)
             return
+        has_video, duration = inspect_media(media)
         self._project = {
             "schema_version": 1,
             "language": "ja",
@@ -636,11 +834,13 @@ class StudyBridge(QObject):
                                else self._project.get("language", "ja"))
             if language not in {"ja", "en"}:
                 raise ValueError("字幕语言仅支持日语或英语")
-            segments = validate_segments(raw["segments"], float(self._project["duration"]), language)
+            source_segments, repairs = repair_collapsed_repetitions(raw["segments"], language)
+            segments = validate_segments(source_segments, float(self._project["duration"]), language)
             if not segments:
                 raise ValueError("字幕列表为空")
             self._backup_project()
             self._project["segments"] = segments
+            self._project['subtitle_timing_repairs'] = raw.get('subtitle_timing_repairs', []) + repairs
             self._project["language"] = language
             self._transcribe_language = language
             self._active_index = 0
@@ -697,11 +897,17 @@ class StudyBridge(QObject):
             self.stateChanged.emit()
 
     @Slot(result=bool)
-    def copyCurrentSentence(self) -> bool:
+    @Slot(int, result=bool)
+    def copyCurrentSentence(self, index: int = -1) -> bool:
         from PySide6.QtGui import QGuiApplication
         if not self._project.get("segments"):
             return False
-        sentence = self.currentSentence
+        segments = self._project['segments']
+        if index == -1:
+            index = self._active_index
+        if not 0 <= index < len(segments):
+            return False
+        sentence = segments[index]
         analysis = sentence.get("analysis", {})
         sections = ["原文\n" + sentence["text"]]
         translation = sentence.get("translation") or analysis.get("translation", "")
@@ -837,11 +1043,13 @@ class StudyBridge(QObject):
             language = raw.get("language", "ja")
             if language not in {"ja", "en"}:
                 raise ValueError(f"自动识别到 {language}；当前精听卡片只支持日语或英语，请手动选择后重试")
-            segments = validate_segments(raw["segments"], float(self._project["duration"]), language)
+            source_segments, repairs = repair_collapsed_repetitions(raw["segments"], language)
+            segments = validate_segments(source_segments, float(self._project["duration"]), language)
             if not segments:
                 raise ValueError("转写没有得到句子")
             self._backup_project()
             self._project["segments"] = segments
+            self._project['subtitle_timing_repairs'] = raw.get('subtitle_timing_repairs', []) + repairs
             self._project["language"] = language
             self._active_index = 0
             self._active_word = -1
@@ -956,6 +1164,12 @@ class StudyBridge(QObject):
             self.stateChanged.emit()
 
     def close(self) -> None:
+        self._closing = True
+        if self._media_warmup is not None:
+            self._media_warmup.join()
+        if self._open_thread and self._open_thread.isRunning():
+            self._open_thread.wait()
+        self._recorder.close()
         if self._process and self._process.state() != QProcess.ProcessState.NotRunning:
             self._process.kill()
             self._process.waitForFinished(3000)

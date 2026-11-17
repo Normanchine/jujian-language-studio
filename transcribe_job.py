@@ -159,6 +159,8 @@ def main(args: list[str] | None = None) -> int:
             "translation": "", "reviewed": False, "words": words,
         })
     raw_segments = segments
+    from core.subtitle_timing import repair_collapsed_repetitions
+    segments, timing_repairs = repair_collapsed_repetitions(segments, detected_language)
     if detected_language == "en":
         segments = merge_english_pauses(segments)
         from subtitle_split import split_segments
@@ -171,6 +173,7 @@ def main(args: list[str] | None = None) -> int:
         "source": media.name, "model": "medium", "device": device, "language": detected_language,
         "review_status": "machine_generated_unchecked", "segments": segments,
         "raw_segments": raw_segments,
+        "subtitle_timing_repairs": timing_repairs,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"segments={len(segments)} device={device} language={detected_language}", flush=True)
     return 0

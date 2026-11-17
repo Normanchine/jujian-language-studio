@@ -5,6 +5,8 @@ area via WM_NCCALCSIZE. No layered-window opacity or simulated minimize fade.
 https://learn.microsoft.com/windows/win32/dwm/customframe
 """
 import sys
+import json
+from datetime import datetime
 
 from PySide6.QtCore import QAbstractNativeEventFilter, QEvent, QObject, Property, Qt, QTimer, Signal, Slot
 
@@ -20,6 +22,9 @@ class NativeFrame(QAbstractNativeEventFilter):
         self.wintypes = wintypes
         self.user = ctypes.WinDLL("user32", use_last_error=True)
         self.user.IsZoomed.argtypes = [wintypes.HWND]
+        self.user.IsIconic.argtypes = [wintypes.HWND]
+        self.user.IsWindowVisible.argtypes = [wintypes.HWND]
+        self.user.IsWindow.argtypes = [wintypes.HWND]
         self.user.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
         self.user.MonitorFromWindow.restype = wintypes.HANDLE
         self.user.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
@@ -81,6 +86,7 @@ class WindowActions(QObject):
         self._tray_available = False
         self._maximized = False
         self._exit_pending = False
+        self._transition = 0
         self._effects_timer = QTimer(self)
         self._effects_timer.setSingleShot(True)
         self._effects_timer.setInterval(100)
@@ -88,7 +94,10 @@ class WindowActions(QObject):
 
     @Property(bool, notify=changed)
     def trayAvailable(self):
-        return self._tray_available
+        if not self._tray_available:
+            return False
+        from PySide6.QtWidgets import QSystemTrayIcon
+        return QSystemTrayIcon.isSystemTrayAvailable()
 
     def attach(self, window, tray_available):
         self.window = window
@@ -101,8 +110,53 @@ class WindowActions(QObject):
             window.windowStateChanged.connect(self._queue_effects)
             window.visibleChanged.connect(self._queue_effects)
             window.screenChanged.connect(self._queue_effects)
+            window.windowStateChanged.connect(lambda *args: self._record('state-changed'))
             self._queue_effects()
+        self._record('attached')
         self.changed.emit()
+
+    def _sync_handle(self):
+        if self.frame:
+            self.frame.hwnd = int(self.window.winId())
+            return self.frame.hwnd
+        return 0
+
+    def _remember_size_state(self):
+        state = self.window.windowState()
+        if state != Qt.WindowMinimized:
+            self._maximized = state == Qt.WindowMaximized
+
+    def _record(self, action):
+        # No titles, document contents, filenames, credentials or model text.
+        if not self.window:
+            return
+        try:
+            from core.paths import DATA
+            path = DATA / 'window-actions.log'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size > 512 * 1024:
+                path.replace(path.with_name('window-actions.previous.log'))
+            handle = int(self.window.winId())
+            row = dict(time=datetime.now().isoformat(timespec='milliseconds'), action=action,
+                qt_visible=self.window.isVisible(), qt_state=self.window.windowState().name,
+                hwnd=handle, cached_hwnd=self.frame.hwnd if self.frame else 0)
+            if self.frame:
+                row.update(native_visible=bool(self.frame.user.IsWindowVisible(handle)),
+                           native_minimized=bool(self.frame.user.IsIconic(handle)))
+            with path.open('a', encoding='utf-8') as log:
+                log.write(json.dumps(row) + '\n')
+        except (OSError, RuntimeError, ValueError):
+            pass  # Diagnostics must never prevent a window operation.
+
+    @Slot(str)
+    def noteClose(self, decision):
+        self._record('close-' + decision)
+
+    @Slot()
+    def closeWindow(self):
+        self._record('close-request')
+        if self.window.close():
+            self.app.quit()
 
     def _queue_effects(self, *args):
         self._effects_timer.start()
@@ -111,6 +165,8 @@ class WindowActions(QObject):
         if watched is self.window and event.type() in {
             QEvent.Show, QEvent.WinIdChange, QEvent.PlatformSurface,
         }:
+            if event.type() in {QEvent.Show, QEvent.WinIdChange}:
+                self._sync_handle()
             self._queue_effects()
         return False
 
@@ -118,9 +174,7 @@ class WindowActions(QObject):
         if not self.frame or not self.window.isVisible():
             return
         # Qt may recreate the native handle during window state transitions.
-        hwnd = int(self.window.winId())
-        if hwnd != self.frame.hwnd:
-            self.frame.hwnd = hwnd
+        hwnd = self._sync_handle()
         # Asking DWM for rounding alone is insufficient if caption/frame styles were removed.
         # Repair only when needed; unconditional SetWindowPos would cause repeated native events.
         if self.frame.get_style(hwnd, -16) & 0x00CF0000 != 0x00CF0000:
@@ -137,36 +191,79 @@ class WindowActions(QObject):
 
     @Slot()
     def minimize(self):
-        self._maximized = self.window.windowState() == Qt.WindowMaximized
+        self._record('minimize-request')
+        self._remember_size_state()
+        self._transition += 1
+        ticket = self._transition
         if self.frame:
-            self.frame.user.ShowWindow(self.frame.hwnd, 6)  # SW_MINIMIZE, animated by DWM.
+            handle = self._sync_handle()
+            if self.frame.get_style(handle, -16) & 0x00CF0000 != 0x00CF0000:
+                self.frame.enable()
+            self.frame.user.ShowWindow(handle, 6)  # SW_MINIMIZE, animated by DWM.
         else:
             self.window.showMinimized()
+        QTimer.singleShot(120, lambda: self._confirm_minimized(ticket))
+
+    def _confirm_minimized(self, ticket):
+        if ticket != self._transition or self._exit_pending:
+            return
+        handle = self._sync_handle()
+        if self.window.windowState() != Qt.WindowMinimized or (self.frame and not self.frame.user.IsIconic(handle)):
+            self.window.showMinimized()
+        confirmed = self.window.windowState() == Qt.WindowMinimized and (
+            not self.frame or self.frame.user.IsIconic(self._sync_handle()))
+        self._record('minimize-confirmed' if confirmed else 'minimize-failed')
 
     @Slot()
     def hideToTray(self):
-        self._maximized = self.window.windowState() == Qt.WindowMaximized
+        self._record('tray-hide-request')
+        self._remember_size_state()
+        self._transition += 1
         self.window.hide()
+        handle = self._sync_handle()
+        # Qt can already believe it is hidden while Windows still displays it.
+        # In that state QWindow.hide() is a no-op; reconcile the native window too.
+        if self.frame and self.frame.user.IsWindowVisible(handle):
+            self.frame.user.ShowWindow(handle, 0)  # SW_HIDE.
+        confirmed = not self.window.isVisible() and (not self.frame or not self.frame.user.IsWindowVisible(handle))
+        self._record('tray-hide-confirmed' if confirmed else 'tray-hide-failed')
 
     @Slot()
     def restore(self):
-        minimized = self.window.windowState() == Qt.WindowMinimized
-        if self.window.isVisible() and not minimized:
+        self._record('restore-request')
+        self._transition += 1
+        handle = self._sync_handle()
+        native_minimized = bool(self.frame and self.frame.user.IsIconic(handle))
+        native_hidden = bool(self.frame and not self.frame.user.IsWindowVisible(handle))
+        minimized = self.window.windowState() == Qt.WindowMinimized or native_minimized
+        if self.window.isVisible() and not minimized and not native_hidden:
             pass
         elif self.frame and minimized:
-            self.frame.user.ShowWindow(self.frame.hwnd, 9)  # SW_RESTORE.
+            self.frame.user.ShowWindow(handle, 9)  # SW_RESTORE.
+            if not self.window.isVisible():
+                self.window.showMaximized() if self._maximized else self.window.showNormal()
         elif self._maximized:
             self.window.showMaximized()
         else:
             self.window.showNormal()
+        if self.frame and self.window.isVisible() and not self.frame.user.IsWindowVisible(self._sync_handle()):
+            # The inverse mismatch is possible too: Qt thinks it is shown while
+            # the native window is hidden, so Qt's show() can also be a no-op.
+            self.frame.user.ShowWindow(self.frame.hwnd, 3 if self._maximized else 1)
         self.window.raise_()
         self.window.requestActivate()
+        self._queue_effects()
+        confirmed = self.window.isVisible() and self.window.windowState() != Qt.WindowMinimized and (
+            not self.frame or (self.frame.user.IsWindowVisible(self._sync_handle()) and not self.frame.user.IsIconic(self.frame.hwnd)))
+        self._record('restore-confirmed' if confirmed else 'restore-failed')
 
     @Slot()
     def exit(self):
         if self._exit_pending:
             return
         self._exit_pending = True
+        self._transition += 1
+        self._record('exit-request')
         # Leave the native tray menu's event loop before closing a minimized window.
         QTimer.singleShot(0, self._exit)
 

@@ -25,6 +25,7 @@ The Windows directory distribution keeps shared libraries separate; keep its
 - keyring: <https://github.com/jaraco/keyring>
 - Pillow: <https://github.com/python-pillow/Pillow/blob/main/LICENSE>
 - PyYAML: <https://github.com/yaml/pyyaml/blob/main/LICENSE>
+- PyAudioWPatch and its PortAudio/PyAudio components: <https://github.com/s0d3s/PyAudioWPatch> (Apache-2.0 / MIT notices in the distribution)
 
 The character depiction in `assets/doraemon-reading.png` is excluded from the
 MIT grant. The underlying character belongs to its respective rights holders;

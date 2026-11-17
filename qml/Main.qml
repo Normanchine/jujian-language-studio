@@ -7,7 +7,7 @@ import QtQuick.Effects
 
 ApplicationWindow {
     id: root
-    property string appVersion: "0.2.12"
+    property string appVersion: "0.2.14"
     property var readingPreviewItems: []
     property var readingHomeState: reading.homeState
     width: 1180
@@ -17,6 +17,21 @@ ApplicationWindow {
     property var nativeActions: typeof windowActions !== "undefined" ? windowActions : null
     property bool forceExit: false
     property string previewLabel: ""
+    property var recorder: study.recorder
+    function openRecorder() {
+        recordingDialog.open()
+    }
+    function toggleRecording() {
+        if (recorder.active) { recorder.stop(); return }
+        if (recorder.busy) return
+        player.pause(); root.saveCurrentPlayback()
+        recorder.startConfigured()
+    }
+    function openRecordingSettings() {
+        recordingDialog.close()
+        root.page="settings"; settingsLoader.active=true
+        Qt.callLater(function() { if (settingsLoader.item) settingsLoader.item.showRecordingSettings() })
+    }
     visible: !nativeActions
     flags: Qt.Window | Qt.FramelessWindowHint
     title: (study.hasMedia ? "句间 — " + study.title : "句间") + (previewLabel ? " · " + previewLabel : "")
@@ -96,14 +111,60 @@ ApplicationWindow {
     }
     property bool maximized: visibility === Window.Maximized
     onClosing: function(close) {
-        if (!writingView.saveNow()) { close.accepted = false; forceExit = false; saveFailureDialog.open(); return; }
+        if (recorder.active) {
+            if (nativeActions) nativeActions.noteClose("recording-protected")
+            close.accepted = false; forceExit = false; recordingCloseDialog.open(); return;
+        }
+        recordingDialog.saveDetails()
+        if (!writingView.saveNow()) { if (nativeActions) nativeActions.noteClose("save-veto"); close.accepted = false; forceExit = false; saveFailureDialog.open(); return; }
         root.saveCurrentPlayback()
         writer.pauseTask()
-        if (writer.saveError) { close.accepted = false; forceExit = false; saveFailureDialog.open(); return; }
+        if (writer.saveError) { if (nativeActions) nativeActions.noteClose("save-veto"); close.accepted = false; forceExit = false; saveFailureDialog.open(); return; }
         readingView.leavePage()
         if (!forceExit && settings.values.close_behavior === "tray" && nativeActions && nativeActions.trayAvailable) {
             close.accepted = false
             nativeActions.hideToTray()
+            nativeActions.noteClose("tray")
+        } else if (nativeActions) {
+            nativeActions.noteClose("accepted")
+        }
+    }
+    RecordingDialog {
+        id: recordingDialog; service: root.recorder
+        onSettingsRequested: root.openRecordingSettings()
+        onPreviewRequested: player.pause()
+    }
+    Popup {
+        id: recordingCloseDialog; anchors.centerIn: parent; modal: true
+        width: Math.min(480, root.width - 48); padding: 24; focus: true
+        background: Rectangle { radius: 14; color: settings.palette.surface; border.color: "#DCE4DE" }
+        Overlay.modal: Rectangle { color: "#660F1C16" }
+        contentItem: ColumnLayout {
+            spacing: 14
+            Text { text: "录音仍在进行"; font.pixelSize: 18; font.weight: Font.DemiBold; color: "#26342C" }
+            Text { text: "停止后可以试听并导入，原始录音会自动暂存。"; color: "#748178"; font.pixelSize: 13
+                wrapMode: Text.Wrap; Layout.fillWidth: true }
+            RowLayout {
+                AppButton { text: "继续后台录制"; onClicked: {
+                    recordingCloseDialog.close(); recordingDialog.close()
+                    if (root.nativeActions && root.nativeActions.trayAvailable) root.nativeActions.hideToTray()
+                    else root.showMinimized()
+                } }
+                AppButton { text: "停止并整理录音"; primary: true; onClicked: {
+                    recordingCloseDialog.close(); recorder.stop(); recordingDialog.open()
+                } }
+            }
+        }
+    }
+    Connections {
+        target: root.recorder
+        function onFailed() { recordingDialog.open() }
+        function onImported(path, transcribe) {
+            if (study.busy || study.enriching) return
+            root.saveCurrentPlayback(); study.openProject(path)
+            study.setTranscriptionLanguage(study.contentLanguage)
+            root.page = "listen"
+            if (transcribe) study.transcribe()
         }
     }
     Dialog {
@@ -258,6 +319,7 @@ ApplicationWindow {
             root.restorePlayback()
         }
         onPlaybackStateChanged: {
+            if (playbackState === MediaPlayer.PlayingState && root.recorder.active) pause()
             if (playbackState !== MediaPlayer.PlayingState) root.saveCurrentPlayback()
         }
         onPositionChanged: function(position) {
@@ -434,7 +496,7 @@ ApplicationWindow {
             ActionButton { visible: root.page === "listen" && root.width >= 1160
                 label: study.contentLanguage === "en" ? "句子解释" : "语法解析"
                 enabled: study.sentenceCount > 0 && !study.busy && !study.enriching; onClicked: study.startEnrichment(true) }
-            ActionButton { visible: root.page === "listen" && root.width < 1160; label: "更多"
+            ActionButton { id: moreButton; objectName: "listeningMoreButton"; visible: root.page === "listen" && root.width < 1160; label: "更多"
                 onClicked: moreMenu.open() }
             ActionButton { visible: study.enriching && root.page === "listen"; label: "停止处理"
                 onClicked: study.stopEnrichment() }
@@ -445,11 +507,12 @@ ApplicationWindow {
                 enabled: !study.busy && !study.enriching
                 onClicked: mediaPicker.open() }
         }
-        Menu { id: moreMenu; x: toolbar.width - width - 18; y: toolbar.height - 2
-            MenuItem { text: "整理字幕"; enabled: (study.contentLanguage === "en" || study.contentLanguage === "ja") && study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.organizeSubtitles() }
-            MenuItem { text: "导入字幕"; enabled: study.hasMedia && !study.busy && !study.enriching; onTriggered: transcriptPicker.open() }
-            MenuItem { text: "中文翻译"; enabled: study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.startTranslation(true) }
-            MenuItem { text: study.contentLanguage === "en" ? "句子解释" : "语法解析"
+        AppMenu { id: moreMenu; objectName: "listeningMoreMenu"; parent: moreButton
+            x: moreButton.width-width; y: moreButton.height+6
+            AppMenuItem { objectName: "listeningOrganize"; text: "整理字幕"; enabled: (study.contentLanguage === "en" || study.contentLanguage === "ja") && study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.organizeSubtitles() }
+            AppMenuItem { objectName: "listeningImportSubtitles"; text: "导入字幕"; enabled: study.hasMedia && !study.busy && !study.enriching; onTriggered: transcriptPicker.open() }
+            AppMenuItem { objectName: "listeningTranslate"; text: "中文翻译"; enabled: study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.startTranslation(true) }
+            AppMenuItem { objectName: "listeningAnalyze"; text: study.contentLanguage === "en" ? "句子解释" : "语法解析"
                 enabled: study.sentenceCount > 0 && !study.busy && !study.enriching; onTriggered: study.startEnrichment(true) }
         }
         Row {
@@ -459,7 +522,7 @@ ApplicationWindow {
             WindowButton { objectName: "maximizeButton"; kind: root.maximized ? "restore" : "maximize"
                 hint: root.maximized ? "还原" : "最大化"
                 onClicked: root.maximized ? root.showNormal() : root.showMaximized() }
-            WindowButton { objectName: "closeButton"; kind: "close"; hint: "关闭"; destructive: true; onClicked: root.close() }
+            WindowButton { objectName: "closeButton"; kind: "close"; hint: "关闭"; destructive: true; onClicked: root.nativeActions ? root.nativeActions.closeWindow() : root.close() }
         }
     }
 
@@ -508,17 +571,22 @@ ApplicationWindow {
         anchors.left: sidebar.right; anchors.right: parent.right; anchors.bottom: parent.bottom
         height: 27; color: "transparent"
         Text {
-            x: 16; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 48
-            text: root.page === "reading" ? ""
+            x: 16; anchors.verticalCenter: parent.verticalCenter; width: parent.width - (root.recorder.active ? 280 : 48)
+            text: root.recorder.active ? "● 正在录制电脑声音  " + root.timeText(root.recorder.seconds * 1000)
+                  : root.page === "reading" ? ""
                   : player.errorString && root.page === "listen" ? "播放错误：" + player.errorString
                   : root.page === "listen" && study.currentSentence.suggestion ? study.currentSentence.suggestion
                   : root.page === "writing" ? writer.status
                   : root.page === "settings" ? settings.status
                   : root.page === "home" && downloads.status ? downloads.status : study.status
             elide: Text.ElideRight
-            color: player.errorString ? "#B63C4D" : "#68766D"
+            color: root.recorder.active ? root.accentColor : player.errorString ? "#B63C4D" : "#68766D"
             font.family: "Microsoft YaHei UI"; font.pixelSize: 11
         }
+        AppButton { objectName: "recordingStatusStop"; visible: root.recorder.active
+            anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter
+            text: "停止录制  Ctrl+Shift+R"; height: 25; flat: true; enabled: root.recorder.state!=="stopping"
+            onClicked: root.recorder.stop() }
     }
 
     Item {
@@ -532,8 +600,11 @@ ApplicationWindow {
             anchors.fill: parent; visible: root.page === "home"
             themeAccent: root.accentColor
             onOpenLocal: mediaPicker.open()
+            onRecordAudio: root.toggleRecording()
+            onReviewRecording: root.openRecorder()
+            onRecordingSettings: root.openRecordingSettings()
             onNewDraft: { if (!writingView.saveNow() || !writer.newDraft("ja")) return; writingView.openEditor(); root.page = "writing" }
-            onOpenProject: function(path) { root.saveCurrentPlayback(); study.openProject(path) }
+            onOpenProject: function(path) { root.saveCurrentPlayback(); player.pause(); study.requestOpenProject(path) }
             onOpenDraft: function(path) { writer.openDraft(path); writingView.openEditor(); root.page = "writing" }
             onOpenLibrary: { study.refreshProjects(); root.page = "library" }
             onOpenWriting: { writer.refresh(); writingView.showLibrary(); root.page = "writing" }
@@ -541,7 +612,7 @@ ApplicationWindow {
         }
         LibraryView { anchors.fill: parent; visible: root.page === "library"
             themeAccent: root.accentColor
-            onOpenProject: function(path) { root.saveCurrentPlayback(); study.openProject(path) } }
+            onOpenProject: function(path) { root.saveCurrentPlayback(); player.pause(); study.requestOpenProject(path) } }
         Item {
             id: writingView; anchors.fill: parent; visible: root.page === "writing"
             function ensure() { writingLoader.active = true; return writingLoader.item }
@@ -551,7 +622,8 @@ ApplicationWindow {
             onVisibleChanged: if (visible) ensure()
             Loader {
                 id: writingLoader; objectName: "writingPageLoader"; anchors.fill: parent; active: false
-                sourceComponent: WritingView { themeAccent: root.accentColor }
+                source: "WritingView.qml"
+                onLoaded: item.themeAccent = Qt.binding(function() { return root.accentColor })
             }
         }
         Item {
@@ -562,11 +634,14 @@ ApplicationWindow {
             onVisibleChanged: if (visible) ensure()
             Loader {
                 id: readingLoader; objectName: "readingPageLoader"; anchors.fill: parent; active: false
-                sourceComponent: ReadingHome {
-                    materials: root.readingPreviewItems.length ? root.readingPreviewItems.filter(function(a) {
+                source: "ReadingHome.qml"
+                onLoaded: {
+                    item.materials = Qt.binding(function() { return root.readingPreviewItems.length ? root.readingPreviewItems.filter(function(a) {
                         return a.sourceKind !== "personal_import" && a.sourceKind !== "user_paste" && a.sourceKind !== "personal_practice";
-                    }).concat(reading.importedCatalogue) : reading.catalogue; savedState: root.readingHomeState
-                    onStateEdited: function(state) { root.readingHomeState = state; reading.saveHomeState(state) }
+                    }).concat(reading.importedCatalogue) : reading.catalogue })
+                    item.savedState = Qt.binding(function() { return root.readingHomeState })
+                    item.restore()
+                    item.stateEdited.connect(function(state) { root.readingHomeState = state; reading.saveHomeState(state) })
                 }
             }
         }
@@ -574,7 +649,8 @@ ApplicationWindow {
             id: settingsLoader; objectName: "settingsPageLoader"; anchors.fill: parent
             visible: root.page === "settings"; active: false
             onVisibleChanged: if (visible) active = true
-            sourceComponent: SettingsView { appVersion: root.appVersion }
+            source: "SettingsView.qml"
+            onLoaded: item.appVersion = root.appVersion
         }
 
         Item {
@@ -1029,7 +1105,7 @@ ApplicationWindow {
     Shortcut {
         objectName: "copyCurrentSentenceShortcut"; sequence: settings.values.shortcut_copy
         enabled: root.listeningKeysEnabled && study.sentenceCount > 0
-        onActivated: if (study.copyCurrentSentence()) copyToastTimer.restart()
+        onActivated: if (study.copyCurrentSentence(root.highlightedSentenceIndex)) copyToastTimer.restart()
     }
     Shortcut { sequence: settings.values.shortcut_replay; enabled: root.listeningKeysEnabled && study.sentenceCount > 0; onActivated: root.replayCurrentSentence() }
 }

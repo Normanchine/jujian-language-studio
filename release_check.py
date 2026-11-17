@@ -46,6 +46,7 @@ def main():
                     "-c:a", "aac", str(media)], check=True, timeout=30)
     app = QGuiApplication([])
     bridge = study.StudyBridge()
+    app.aboutToQuit.connect(bridge.recorder.close)
     settings = model_settings.SettingsBridge()
     writer = writing.WritingBridge()
     downloads = DownloadBridge(settings)
@@ -68,7 +69,7 @@ def main():
     engine.load(QUrl.fromLocalFile(str(study.ASSETS / "qml/Main.qml")))
     assert engine.rootObjects(), errors
     window = engine.rootObjects()[0]
-    assert window.property("appVersion") == "0.2.12"
+    assert window.property("appVersion") == "0.2.14"
     window_actions.attach(window, False)
     from app import use_windows_window_effects
     use_windows_window_effects(window)
@@ -98,17 +99,27 @@ def main():
 
     def run_checks():
         try:
+            quick.raise_()
+            quick.requestActivate()
+            assert QTest.qWaitForWindowActive(quick, 3000), "Release checks need an active desktop window"
             window.setProperty("page", "settings")
             app.processEvents()
             field = window.findChild(QObject, "nextShortcut")
             item = shiboken6.wrapInstance(shiboken6.getCppPointer(field)[0], QQuickItem)
+            flick = window.findChild(QObject, "settingsFlick")
+            content = flick.property("contentItem")
+            offset = item.mapToItem(content, QPointF(0, 0)).y()
+            flick.setProperty("contentY", max(0, min(offset - 40, flick.property("contentHeight") - flick.property("height"))))
+            QTest.qWait(80)
             point = item.mapToScene(QPointF(20, 18)).toPoint()
             QTest.mouseClick(quick, Qt.LeftButton, Qt.NoModifier, point)
             QTest.keyClick(quick, Qt.Key_D, Qt.ControlModifier)
             assert field.property("sequence") == "Ctrl+D", field.property("sequence")
             settings.saveShortcuts("Alt+Left", "Ctrl+D", "Space", "Ctrl+L")
             window.setProperty("page", "listen")
+            app.processEvents()
             quick.contentItem().forceActiveFocus()
+            QTest.qWait(80)
             QTest.keyClick(quick, Qt.Key_D, Qt.ControlModifier)
             assert bridge.activeIndex == 1, bridge.activeIndex
             QTest.qWait(120)
@@ -222,11 +233,67 @@ def main():
             check_writing_updates(engine,window,writer,captures)
             from reading_update_check import check_reading_updates
             check_reading_updates(engine,window,reading,settings,captures)
+            check_listening_feedback()
             assert not errors, errors
             print("real EOF, keys, 12 cards, vertical divider, saved highlight delay, wheel/follow, card seek, normal/narrow: OK", flush=True)
             app.exit(0)
         except Exception as exc:
             failed.append(traceback.format_exc()); app.exit(1)
+
+    def check_listening_feedback():
+        """Run the reported boundary and asynchronous-load checks in the EXE too."""
+        from time import monotonic
+        window.setProperty('page', 'listen')
+        player.pause()
+        # Seek back from EOF before comparing the two clocks.
+        boundary_cases = []
+        quick.contentItem().forceActiveFocus()
+        from PySide6.QtGui import QGuiApplication
+        for delay in (0, 100, 200, 400, 600):
+            settings.savePlayerPreferences(delay, 360)
+            for offset in (-40, 0, 40):
+                player.setPosition(1200 + offset)
+                QTest.qWait(15)
+                visible = window.property('highlightedSentenceIndex')
+                QGuiApplication.clipboard().clear()
+                QTest.keyClick(quick, Qt.Key_C, Qt.ControlModifier | Qt.ShiftModifier)
+                assert bridge.segments[visible]['text'] in QGuiApplication.clipboard().text(), (delay,offset,visible)
+                boundary_cases.append(dict(delay=delay,offset=offset,visible=visible,backend=bridge.activeIndex))
+        player.pause()
+        request_path = bridge._project_file
+        ticks = []
+        timer = QTimer(); timer.setInterval(5); timer.timeout.connect(lambda: ticks.append(1)); timer.start()
+        bridge.requestOpenProject(str(request_path))
+        started = monotonic()
+        while bridge.busy and monotonic() - started < 10:
+            QTest.qWait(10)
+        timer.stop()
+        assert not bridge.busy and bridge._project_file == request_path, bridge.status
+        user_project = os.environ.get('JUJIAN_LISTENING_PROJECT')
+        repaired = False
+        if user_project:
+            source = Path(user_project)
+            original = source.read_bytes()
+            copied = study.PROJECTS / 'reported-listening.json'
+            copied.write_bytes(original)
+            bridge.requestOpenProject(str(copied))
+            started = monotonic()
+            while bridge.busy and monotonic() - started < 15:
+                QTest.qWait(10)
+            assert not bridge.busy and bridge._project_file == copied, bridge.status
+            assert bridge.segments[180]['text'] == '5番'
+            assert bridge._project['subtitle_timing_repairs'][0]['original']['text'] != '5番'
+            bridge._save()
+            study._inspect_unchanged_media.cache_clear()
+            reloaded = study.read_project(copied)
+            assert reloaded['segments'][180]['text'] == '5番'
+            assert reloaded['subtitle_timing_repairs'] == bridge._project['subtitle_timing_repairs']
+            assert source.read_bytes() == original
+            repaired = True
+        (captures / 'listening-updates.json').write_text(json.dumps(dict(passed=True,
+            boundary_cases=boundary_cases,asynchronous_project_load=True,
+            original_project_unchanged=bool(user_project),reported_project_repaired=repaired),
+            ensure_ascii=False,indent=2),encoding='utf-8')
 
     QTimer.singleShot(1000, run_checks)
     QTimer.singleShot(30000, lambda: app.exit(3))

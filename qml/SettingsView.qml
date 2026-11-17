@@ -8,6 +8,9 @@ Item {
     Component.onCompleted: settings.refreshKeyStatus()
     onVisibleChanged: if (visible) settings.refreshKeyStatus()
     property string appVersion: ""
+    function showRecordingSettings() {
+        settingsFlick.contentY=Math.max(0,Math.min(recordingPanel.y+panel.y-12,settingsFlick.contentHeight-settingsFlick.height))
+    }
     component ShortcutField: TextField {
         id: keyField
         property string sequence: ""
@@ -36,6 +39,7 @@ Item {
     FolderDialog { id: folderPicker; title: "选择下载目录"
         onAccepted: folderField.text = settings.localFolder(selectedFolder.toString()) }
     Flickable {
+        id: settingsFlick
         objectName: "settingsFlick"
         anchors.fill: parent; clip: true; contentWidth: width; contentHeight: panel.height + 24
         ScrollBar.vertical: ScrollBar {
@@ -83,6 +87,8 @@ Item {
                         }
                     }
                 }
+                Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
+                RecordingSettings { id: recordingPanel; width: parent.width }
                 Rectangle { width: parent.width; height: 1; color: "#E9EDE9" }
                 Text { text: "精听快捷键"; font.pixelSize: 17; font.weight: Font.DemiBold; color: "#27352D" }
                 Text { text: "点击输入框后按下快捷键，再保存。仅在精听页生效；输入文字时不会触发。"

@@ -14,6 +14,37 @@ Item {
     property string pendingDeleteTitle: ""
     property var pendingDeleteOptions: ({})
     property string deleteError: ""
+    property string movePath: ""
+    property var moveFolderOptions: [{id:"",name:"未分类"}].concat(study.libraryFolders.filter(function(f) {
+        return f.language === (moveLanguage.currentIndex === 1 ? "ja" : "en")
+    }))
+
+    function matches(item, key) {
+        if (key === "ja") return item.libraryLanguage === "日语"
+        if (key === "en") return item.libraryLanguage === "英语"
+        if (key === "favorites") return item.favorite
+        if (key.indexOf("child:") === 0) return item.folderId === key.substring(6)
+        if (key === "unfiled:ja") return item.libraryLanguage === "日语" && !item.folderId
+        if (key === "unfiled:en") return item.libraryLanguage === "英语" && !item.folderId
+        return true
+    }
+    function folderEntries() {
+        var rows = [{key:"all",label:"全部媒体",icon:"▦",child:false}]
+        var folders=study.libraryFolders
+        for (var language of ["ja","en"]) {
+            rows.push({key:language,label:language==="ja" ? "日语" : "英语",icon:language==="ja" ? "日" : "英",child:false})
+            rows.push({key:"unfiled:"+language,label:"未分类",icon:"",child:true})
+            for (var f of folders) if (f.language===language) rows.push({key:"child:"+f.id,label:f.name,icon:"",child:true})
+        }
+        rows.push({key:"favorites",label:"收藏夹",icon:"★",child:false})
+        return rows
+    }
+    function moveProject(item) {
+        movePath=item.path
+        moveLanguage.currentIndex=item.libraryLanguage==="日语" ? 1 : 0
+        moveFolder.currentIndex=Math.max(0,moveFolderOptions.findIndex(function(f) {return f.id===item.folderId}))
+        movePopup.open()
+    }
 
     function confirmDelete(path, title) {
         pendingDelete = path
@@ -29,9 +60,7 @@ Item {
         var result = []
         for (var i = 0; i < study.projects.length; i++) {
             var item = study.projects[i]
-            if (folder === "ja" && item.libraryLanguage !== "日语") continue
-            if (folder === "en" && item.libraryLanguage !== "英语") continue
-            if (folder === "favorites" && !item.favorite) continue
+            if (!matches(item, folder)) continue
             if (kind !== "全部" && (item.video ? "视频" : "音频") !== kind) continue
             if (progressFilter !== "全部" && item.state !== progressFilter) continue
             result.push(item)
@@ -44,9 +73,7 @@ Item {
         var count = 0
         for (var i = 0; i < study.projects.length; i++) {
             var item = study.projects[i]
-            if ((key === "ja" && item.libraryLanguage === "日语")
-                    || (key === "en" && item.libraryLanguage === "英语")
-                    || (key === "favorites" && item.favorite)) count++
+            if (matches(item,key)) count++
         }
         return count
     }
@@ -56,6 +83,10 @@ Item {
         RowLayout { width: parent.width; height: 41
             Text { text: "媒体资料库"; color: "#26342C"; font.pixelSize: 19
                 font.weight: Font.DemiBold; Layout.fillWidth: true }
+            AppButton { objectName: "libraryCreateFolder"; text: "新建子文件夹"; onClicked: {
+                createLanguage.currentIndex=library.folder==="ja" || library.folder==="unfiled:ja" ? 1 : 0
+                folderName.clear(); createError.text=""; createFolderPopup.open()
+            } }
             AppButton { text: "刷新"; onClicked: study.refreshProjects() }
         }
         Rectangle {
@@ -66,15 +97,16 @@ Item {
                 Rectangle {
                     width: 178; height: parent.height; radius: 9
                     color: "#F8FAF8"; border.color: "#EBEFEB"
+                    Flickable {
+                        anchors.fill: parent; clip: true; contentWidth: width; contentHeight: folderColumn.height+18
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                     Column {
-                        anchors.fill: parent; anchors.margins: 9; spacing: 5
+                        id: folderColumn; x: 9; y: 9; width: parent.width-18; spacing: 5
                         Text { text: "文件夹"; color: "#88958B"; font.pixelSize: 11
                             leftPadding: 10; bottomPadding: 6 }
                         Repeater {
-                            model: [{key:"all", label:"全部媒体", icon:"▦"},
-                                    {key:"ja", label:"日语", icon:"日"},
-                                    {key:"en", label:"英语", icon:"英"},
-                                    {key:"favorites", label:"收藏夹", icon:"★"}]
+                            model: library.folderEntries()
                             delegate: Rectangle {
                                 required property var modelData
                                 objectName: "libraryFolder_" + modelData.key
@@ -84,7 +116,8 @@ Item {
                                 Text { x: 10; anchors.verticalCenter: parent.verticalCenter
                                     text: modelData.icon; color: library.themeAccent; font.pixelSize: 15 }
                                 Text { x: 35; anchors.verticalCenter: parent.verticalCenter
-                                    text: modelData.label; color: "#344239"; font.pixelSize: 13
+                                    width: parent.width-64; elide: Text.ElideRight
+                                    text: modelData.label; color: modelData.child ? "#66776B" : "#344239"; font.pixelSize: modelData.child ? 12 : 13
                                     font.weight: library.folder === modelData.key ? Font.DemiBold : Font.Normal }
                                 Text { anchors.right: parent.right; anchors.rightMargin: 10
                                     anchors.verticalCenter: parent.verticalCenter
@@ -94,6 +127,7 @@ Item {
                                     onClicked: library.folder = modelData.key }
                             }
                         }
+                    }
                     }
                 }
                 Item {
@@ -126,12 +160,13 @@ Item {
                                 text: modelData.title; elide: Text.ElideRight
                                 color: "#29362E"; font.pixelSize: 13; font.weight: Font.DemiBold }
                             Text { id: languageLabel; x: 84; y: 34; z: 2
-                                text: modelData.libraryLanguage + " ⌄"
+                                text: modelData.libraryLanguage + " / " + modelData.folderName + " ⌄"
+                                width: Math.min(170, implicitWidth); elide: Text.ElideRight
                                 color: languageHover.containsMouse ? "#405F4B" : "#77857B"
                                 font.pixelSize: 11
                                 MouseArea { id: languageHover; anchors.fill: parent; z: 2
                                     hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                    onClicked: languageMenu.popup() }
+                                    onClicked: library.moveProject(modelData) }
                                 ToolTip.visible: languageHover.containsMouse
                                 ToolTip.text: "点击修改资料库分类"
                             }
@@ -140,12 +175,6 @@ Item {
                                 text: "· " + (modelData.video ? "视频" : "音频") + " · " + modelData.state
                                       + (modelData.available ? "" : " · 源文件已丢失")
                                 elide: Text.ElideRight; color: "#77857B"; font.pixelSize: 11 }
-                            Menu { id: languageMenu; x: 84; y: 54; z: 3
-                                MenuItem { text: "归入日语"; enabled: modelData.libraryLanguage !== "日语"
-                                    onTriggered: study.setProjectLibraryLanguage(modelData.path, "ja") }
-                                MenuItem { text: "归入英语"; enabled: modelData.libraryLanguage !== "英语"
-                                    onTriggered: study.setProjectLibraryLanguage(modelData.path, "en") }
-                            }
                             Rectangle { x: 84; y: 70; width: Math.max(40, parent.width - 101)
                                 height: 3; radius: 2; color: "#E9EDE9"
                                 Rectangle { width: parent.width * modelData.progress; height: parent.height
@@ -178,6 +207,47 @@ Item {
         }
     }
 
+    Popup {
+        id: createFolderPopup; objectName: "libraryCreateFolderPopup"; modal: true; focus: true
+        anchors.centerIn: Overlay.overlay; width: Math.min(440,library.width-32); padding: 24
+        background: Rectangle { radius: 14; color: settings.palette.surface; border.color: "#DCE4DE" }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Text { text: "新建语言子文件夹"; font.pixelSize: 18; font.weight: Font.DemiBold; color: "#26342C" }
+            AppCombo { id: createLanguage; model: ["英语","日语"]; Layout.fillWidth: true }
+            AppField { id: folderName; objectName: "libraryFolderName"; placeholderText: "例如：学术听力"; maximumLength: 40; Layout.fillWidth: true }
+            Text { id: createError; visible: text.length>0; color: "#B64050"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+            RowLayout {
+                Item { Layout.fillWidth: true }
+                AppButton { text: "取消"; onClicked: createFolderPopup.close() }
+                AppButton { objectName: "libraryFolderApply"; text: "创建"; primary: true; enabled: folderName.text.trim().length>0
+                    onClicked: {
+                        var key=study.createLibraryFolder(createLanguage.currentIndex===1 ? "ja" : "en",folderName.text)
+                        if (key) {library.folder="child:"+key;createFolderPopup.close()}
+                        else createError.text=study.status
+                    } }
+            }
+        }
+    }
+    Popup {
+        id: movePopup; objectName: "libraryMovePopup"; modal: true; focus: true
+        anchors.centerIn: Overlay.overlay; width: Math.min(440,library.width-32); padding: 24
+        background: Rectangle { radius: 14; color: settings.palette.surface; border.color: "#DCE4DE" }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Text { text: "整理到文件夹"; font.pixelSize: 18; font.weight: Font.DemiBold; color: "#26342C" }
+            AppCombo { id: moveLanguage; model: ["英语","日语"]; Layout.fillWidth: true; onActivated: moveFolder.currentIndex=0 }
+            AppCombo { id: moveFolder; model: library.moveFolderOptions; textRole: "name"; Layout.fillWidth: true }
+            Text { text: "移动分类会保留音频、字幕和学习进度。"; color: "#748178"; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            RowLayout {
+                Item { Layout.fillWidth: true }
+                AppButton { text: "取消"; onClicked: movePopup.close() }
+                AppButton { text: "保存"; primary: true; onClicked: {
+                    if (study.setProjectLocation(library.movePath,moveLanguage.currentIndex===1 ? "ja" : "en",(library.moveFolderOptions[moveFolder.currentIndex] || {}).id || "")) movePopup.close()
+                } }
+            }
+        }
+    }
     Popup {
         id: deleteConfirm
         objectName: "mediaDeleteConfirm"

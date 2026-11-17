@@ -17,6 +17,7 @@ from linguistics import display_tokens
 from model_settings import read_settings
 from reading_language import BANDS, GRAMMAR_REFERENCE, KANA_BANDS, reference_for, ruby_segments, query_kind
 from reading_gesture import ReadingGesture
+from reading_explanation_quality import teaching_fields, saved_explanation_view
 
 VERSION = 1
 GRAMMAR_VERSION = 4
@@ -107,7 +108,7 @@ def grammar_candidates(text):
     patterns = [
         r'だけでなく',r'について',r'にとって',r'によって',r'に対して',r'に関して',r'として',
         r'ために',r'おかげで',r'せいで',r'にもかかわらず',r'わけでは(?:ない|ありません)',
-        r'ことができ(?:る|ます|た)?',r'なければなら(?:ない|なかった)',r'なくてもいい',
+        r'ことができ(?:ませんでした|ません|なかった|ました|ます|ない|れば|た|る)?',r'なければなら(?:ない|なかった)',r'なくてもいい',
         r'(?:て|で)もいい',r'(?:て|で)はいけ(?:ない|ません)',r'ようになる',r'ようにする',r'ように',r'ような',
         r'ないで',r'ずに',r'そうです',r'そうだ',r'らしい',r'しか',r'ばかり',
         r'(?:て|で)(?:い(?:ます|ました|る|た|ない)|お(?:きます|いた|く)|しま(?:います|った|う)|くれ(?:ました|ます|る|た)|もら(?:いました|います|う|った))',
@@ -125,8 +126,13 @@ def grammar_candidates(text):
         cursor=start+len(token['text'])
         if token['text'] in {'と','ば','なら','たら','ても','でも','から','ので','のに','けど','けれども'} and token['category'] in {'particle','auxiliary'}:
             spans.add((start,cursor))
+    # Complete grammar structures take precedence over their contained fragments.
+    # Do not ask the model to choose ことが instead of ことができました.
+    maximal = [(start,end) for start,end in spans if not any(
+        outer_start <= start and end <= outer_end and (outer_start,outer_end) != (start,end)
+        for outer_start,outer_end in spans)]
     return [dict(candidate_id=f'g{start}_{end}',start=start,end=end,text=text[start:end], **reference_for(text[start:end]))
-            for start,end in sorted(spans)]
+            for start,end in sorted(maximal)]
 
 
 def validate_annotations(raw, part, paragraphs):
@@ -137,8 +143,11 @@ def validate_annotations(raw, part, paragraphs):
     for item in raw['annotations'][:256]:
         if not isinstance(item, dict): rejected += 1; continue
         candidate=candidates.get(str(item.get('candidate_id','')))
-        meaning=item.get('meaning')
-        if not candidate or not isinstance(meaning,str) or not meaning.strip():
+        try:
+            fields = teaching_fields(item)
+        except ValueError:
+            rejected += 1; continue
+        if not candidate:
             rejected += 1; continue
         quote=candidate['text']
         category = item.get('category', 'relation')
@@ -149,15 +158,29 @@ def validate_annotations(raw, part, paragraphs):
         if candidate['band']=='unknown' and item.get('estimated_band') in BANDS[:3]:
             level=dict(band=item['estimated_band'],level_source='AI 参考估计')
         output.append(entry('grammar', paragraph, paragraphs[paragraph], start, start+len(quote),
-                            category=category, meaning=meaning.strip()[:1600], reading='', label='语法结构', source='AI',
+                            category=category, meaning=fields['meaning'][:1600], reading='', label='语法结构', source='AI',
                             **level,
-                            connection=(str(item.get('connection','')).strip()[:240] or candidate['connection']),
-                            point=str(item.get('point','')).strip()[:1000]))
+                            connection=(fields['connection'][:240] or candidate['connection']),
+                            point=fields['point'][:1000]))
     accepted=[]
     for item in sorted({a['id']:a for a in output}.values(),key=lambda a:-(a['end']-a['start'])):
         if any(item['paragraph']==a['paragraph'] and item['start']<a['end'] and a['start']<item['end'] for a in accepted): continue
         accepted.append(item)
     return sorted(accepted,key=lambda a:(a['paragraph'],a['start'])),rejected
+
+
+def annotation_cache(entries, part, paragraphs, vocabulary_levels):
+    """Persist accepted teaching content only, never rejected raw model rows."""
+    paragraph=paragraphs[part['paragraph']]
+    annotations=[]
+    for item in entries:
+        start=char_offset(paragraph,item['start'])-part['start']
+        end=char_offset(paragraph,item['end'])-part['start']
+        row=dict(candidate_id=f'g{start}_{end}',category=item['category'],meaning=item['meaning'],
+                 connection=item.get('connection',''),point=item.get('point',''))
+        if item.get('level_source')=='AI 参考估计':row['estimated_band']=item['band']
+        annotations.append(row)
+    return dict(annotations=annotations,vocabulary_levels=[dict(id=key,band=band) for key,band in vocabulary_levels.items()])
 
 
 def unlisted_vocabulary(part, basic):
@@ -180,6 +203,10 @@ def validate_vocabulary_levels(raw, allowed):
 def analysis_prompt(part, candidates=None, vocabulary=None):
     return ('你是日语精读助手。只从候选中选择在本句中确有语法作用、值得学习的结构，解释实际用法。'
             '程序已确定最小高亮范围，禁止扩大为整句、主语或实义词组合。不要标记纯词汇搭配，'
+            '含义、接续和理解要点是直接给学习者看的教学内容，禁止讨论候选筛选、标注范围、'
+            '内部编号、字段名和分级流程；candidate_id和estimated_band只填各自字段，绝不能出现在解释正文中。'
+            '按完整语法结构解释，例如「見つけることができました」应解释「ことができる」表示能够做到，'
+            '不要只解释「こと」而漏掉整个可能表达。'
             '也不要把引用的と当成条件と。含糊时不选，逐项检查所有候选，避免重叠。'
             '候选已有band时禁止改级；仅对band为unknown的语法与附带未收录词汇，按本句用法提供学习等级参考估计：'
             'basic对应N5–N4，intermediate对应N3–N2，advanced对应N1。不确定可留空，不宣称官方等级。'
@@ -314,7 +341,8 @@ class ReadingAnalysisBridge(QObject):
 
     @Property('QVariantList',notify=changed)
     def grammarFavorites(self):
-        return copy.deepcopy(sorted(self._favorites.values(),key=lambda a:a.get('created_at',0),reverse=True))
+        return copy.deepcopy([saved_explanation_view(a) for a in sorted(
+            self._favorites.values(),key=lambda a:a.get('created_at',0),reverse=True)])
 
     @Property(QObject,constant=True)
     def gesture(self):return self._gesture
@@ -408,20 +436,23 @@ class ReadingAnalysisBridge(QObject):
             self._overrides={'edits':{},'hidden':[]}
         self._refresh_readings()
         identity = engine_identity()
-        count = 0
+        count = invalid_count = 0
         parts = source_parts(self._paragraphs) if language=='ja' else []
         for part in parts:
             cached = load_json(self._analysis_path(identity, part), {})
             try:
-                entries, _ = validate_annotations(cached, part, self._paragraphs)
+                entries, skipped = validate_annotations(cached, part, self._paragraphs)
+                invalid_count += skipped
                 if cached['annotations'] and not entries: continue
             except ValueError:
                 continue
-            self._grammar.extend(entries); count += 1
+            self._grammar.extend(entries); count += not skipped
             allowed=self._part_vocabulary(part,self._paragraphs,self._basic)
             self._vocabulary_levels.update(validate_vocabulary_levels(cached,allowed))
         self._analyzed = bool(parts) and count==len(parts)
         self._status = ('已载入语法结构标注' if self._analyzed else '平假名词汇已标出，可分析语法结构') if language=='ja' else '选中词语或短语，查询当前语境中的用法'
+        if invalid_count:
+            self._status='已保留可用标注，部分解释需重新分析'
         self._query_status = ''
         self.changed.emit()
 
@@ -440,6 +471,7 @@ class ReadingAnalysisBridge(QObject):
         cancelled, epoch = self._cancel, self._epoch
         paragraphs = list(self._paragraphs)
         basic=copy.deepcopy(self._basic)
+        previous_grammar=copy.deepcopy(self._grammar)
         parts = source_parts(paragraphs)
         identity = engine_identity()
         self._busy = True; self._status='正在分析语法…'; self.changed.emit()
@@ -455,7 +487,7 @@ class ReadingAnalysisBridge(QObject):
                     if raw is not None:
                         try:
                             valid,skipped=validate_annotations(raw,part,paragraphs)
-                            if skipped and not valid: raw=None
+                            if skipped: raw=None
                         except ValueError: raw=None
                     if raw is None:
                         if engine_identity()!=identity: raise ValueError('模型设置已改变，请重新分析')
@@ -465,7 +497,7 @@ class ReadingAnalysisBridge(QObject):
                             for offset in range(0,max(len(choices),len(vocabulary),1),16):
                                 if cancelled.is_set():return
                                 batch=choices[offset:offset+16]
-                                response=self.requester(analysis_prompt(part,batch,vocabulary[offset:offset+16]) + ('\n上次返回未对应候选，请严格只返回候选中的candidate_id，无把握时返回空列表。' if attempt else ''), 'analysis', 4200)
+                                response=self.requester(analysis_prompt(part,batch,vocabulary[offset:offset+16]) + ('\n上次解释未通过检查。只返回正确结构和教学说明，正文禁止出现候选编号、内部字段或筛选过程；无把握的条目返回空列表。' if attempt else ''), 'analysis', 4200)
                                 if not isinstance(response,dict) or not isinstance(response.get('annotations'),list):
                                     raise ValueError('模型没有返回语法标注列表')
                                 combined.extend(response['annotations'])
@@ -473,19 +505,24 @@ class ReadingAnalysisBridge(QObject):
                             raw={'annotations':combined,'vocabulary_levels':combined_levels}
                             try:
                                 valid, skipped = validate_annotations(raw, part, paragraphs)
-                                if skipped and not valid: raise ValueError('本段标注无法对应原文，已跳过')
+                                if skipped and not attempt: continue
+                                if skipped and not valid: raise ValueError('本段解释未通过内容检查，请重新分析')
                                 break
                             except ValueError:
                                 if attempt: raise
                                 if cancelled.is_set(): return
                         if cancelled.is_set(): return
-                        save_json(path, raw)
+                        save_json(path,annotation_cache(valid,part,paragraphs,validate_vocabulary_levels(raw,vocabulary)))
                     else:
                         valid, skipped = validate_annotations(raw, part, paragraphs); cached_count+=1
                     entries.extend(valid); rejected+=skipped
                     levels.update(validate_vocabulary_levels(raw,vocabulary))
                 except Exception as exc:
                     failures.append(str(exc))
+                    begin=utf16(paragraphs[part['paragraph']][:part['start']])
+                    finish=begin+utf16(part['text'])
+                    entries.extend(a for a in previous_grammar if a['paragraph']==part['paragraph']
+                                   and begin<=a['start']<a['end']<=finish)
                 if cancelled.is_set(): return
                 self._emit({'epoch':epoch,'kind':'analysis','entries':entries.copy(), 'done':index+1,
                             'total':len(parts),'rejected':rejected,'failures':failures.copy(),'cached':cached_count,'levels':levels.copy()})
@@ -645,7 +682,7 @@ class ReadingAnalysisBridge(QObject):
             if not self._busy:
                 self._status=f"已标注 {len(self._grammar)} 处语法"
                 if event['cached']==event['total']: self._status+=' · 来自本地缓存'
-                if event['rejected']: self._status+=f" · 跳过 {event['rejected']} 条未对齐标注"
+                if event['rejected']: self._status+=f" · 跳过 {event['rejected']} 条不可靠解释，可重新分析"
             if event['failures']: self._status+=' · '+event['failures'][-1]
         elif event['kind']=='translation':
             number=event['paragraph']

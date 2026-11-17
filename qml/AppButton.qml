@@ -10,17 +10,22 @@ Button {
     implicitWidth: Math.max(68, label.implicitWidth + 24)
     implicitHeight: 36
     hoverEnabled: true
+    font.family: "Microsoft YaHei UI"; font.pixelSize: 12; font.weight: Font.DemiBold
+    readonly property bool motion: typeof uiAnimationsEnabled !== "undefined" && uiAnimationsEnabled
     contentItem: Text {
         id: label; text: button.text
         horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
         color: !button.enabled ? "#A0AAA2" : button.primary ? "#FFFFFF" : "#334039"
-        font.family: "Microsoft YaHei UI"; font.pixelSize: 12; font.weight: Font.DemiBold
+        font: button.font
     }
     background: Rectangle {
         radius: 8
-        color: !button.enabled ? "#F1F3F1" : button.primary ? (button.hovered ? Qt.darker(button.primaryColor, 1.12) : button.primaryColor)
-             : button.flat ? (button.hovered ? "#F1F4F1" : "transparent")
-             : button.hovered ? "#EEF1EE" : "#FFFFFF"
-        border.color: button.flat ? "transparent" : button.primary ? button.primaryColor : "#DDE3DD"
+        color: !button.enabled ? settings.palette.page
+             : button.primary ? Qt.darker(button.primaryColor, button.down ? 1.18 : button.hovered ? 1.08 : 1)
+             : button.flat ? (button.hovered ? settings.palette.selection : "transparent")
+             : button.down ? settings.palette.selection : button.hovered ? settings.palette.page : settings.palette.surface
+        border.color: !button.enabled ? "#E1E6E1" : button.activeFocus ? button.accent
+                    : button.flat ? "transparent" : button.primary ? button.primaryColor : "#DDE3DD"
+        Behavior on color { enabled: button.motion; ColorAnimation { duration: 100 } }
     }
 }

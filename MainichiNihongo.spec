@@ -25,7 +25,7 @@ ffmpeg_binaries.append((str(deno_executable), 'deno'))
 a = Analysis(
     ['app.py'],
     pathex=[],
-    binaries=[*ffmpeg_binaries, *collect_dynamic_libs('fugashi')],
+    binaries=[*ffmpeg_binaries, *collect_dynamic_libs('fugashi'), *collect_dynamic_libs('pyaudiowpatch')],
     datas=[('LICENSE', '.'), ('THIRD_PARTY_NOTICES.md', '.'), ('qml', 'qml'), ('helpers/mineru_convert.py', 'helpers'), ('assets/jujian.png', 'assets'), ('assets/reading-demo.json', 'assets'), ('assets/writing-demo.json', 'assets'), ('assets/doraemon-reading.png', 'assets'), (str(model_source), 'models'), *collect_data_files('whisper'), *collect_data_files('unidic_lite'), *collect_data_files('yt_dlp_ejs')],
     hiddenimports=['PySide6.QtMultimedia', 'PySide6.QtQuick', 'keyring.backends.Windows',
                    'fugashi', 'unidic_lite', 'yt_dlp_ejs'],

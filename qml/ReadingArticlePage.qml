@@ -406,7 +406,7 @@ Item {
                 }
             }
             Rectangle {
-                visible: reader.wide;Layout.preferredWidth: 292;Layout.fillHeight: true;radius: 12;color: settings.palette.surface;border.color: "#DFE7E1"
+                objectName: "readingDetailPane";visible: reader.wide;Layout.preferredWidth: Math.max(292,Math.min(420,reader.width*.32));Layout.fillHeight: true;radius: 12;color: settings.palette.surface;border.color: "#DFE7E1"
                 ScrollView { id: detailScroll;anchors.fill: parent;anchors.margins: 20;clip: true;contentWidth: availableWidth
                     ColumnLayout { width: detailScroll.availableWidth;spacing: 16
                         DetailBody { visible: !!reader.detail.text && reader.detailMode!=="";Layout.fillWidth: true }

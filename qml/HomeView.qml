@@ -4,8 +4,12 @@ import QtQuick.Layouts
 
 Item {
     id: home
+    objectName: "homeView"
     Connections { target: downloads; function onCompleted(path, title, url, cover) { linkField.clear() } }
     signal openLocal()
+    signal recordAudio()
+    signal reviewRecording()
+    signal recordingSettings()
     signal newDraft()
     signal openProject(string path)
     signal openDraft(string path)
@@ -15,17 +19,29 @@ Item {
     property color ink: "#26342C"
     property color muted: "#748178"
     property color themeAccent: "#C94859"
+    readonly property int cardGap: height < 720 ? 12 : 16
+    readonly property real recentHeight: Math.max(260, Math.min(520,
+        height - 16 - mediaImport.height - recordingCard.height - 2 * cardGap))
+    readonly property bool compact: recentHeight < 360
+    readonly property int videoHeight: Math.floor((recentHeight - cardGap) / 2)
+    readonly property int audioHeight: recentHeight - videoHeight - cardGap
+    readonly property int audioRowHeight: compact ? 36 : 48
+    readonly property int audioLimit: Math.max(1, Math.min(3, Math.floor((audioHeight - 46) / (audioRowHeight + 6))))
+    readonly property int draftRowHeight: compact ? 62 : 79
+    readonly property int draftLimit: Math.max(1, Math.min(4, Math.floor((recentHeight - 58) / (draftRowHeight + 8))))
 
     function recentMedia(video) {
         var result = []
-        for (var i = 0; i < study.projects.length && result.length < 3; i++)
-            if (study.projects[i].video === video) result.push(study.projects[i])
+        var projects = study.projects
+        for (var i = 0; i < projects.length && result.length < (video ? 3 : audioLimit); i++)
+            if (projects[i].video === video) result.push(projects[i])
         return result
     }
     function recentDrafts() {
         var result = []
-        for (var i = 0; i < writer.drafts.length && result.length < 4; i++)
-            result.push(writer.drafts[i])
+        var drafts = writer.drafts
+        for (var i = 0; i < drafts.length && result.length < draftLimit; i++)
+            result.push(drafts[i])
         return result
     }
     function clock(ms) {
@@ -34,31 +50,37 @@ Item {
     }
 
     Flickable {
+        id: homeFlick; objectName: "homeFlick"
         anchors.fill: parent; clip: true
-        contentWidth: width; contentHeight: contentColumn.height + 32
+        contentWidth: width; contentHeight: contentColumn.height + 16
+        interactive: contentHeight > height + 1
+        onContentHeightChanged: if (contentHeight <= height + 1) contentY = 0
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollBar {
             id: homeScroll
-            policy: ScrollBar.AlwaysOff; width: 8
+            policy: homeFlick.interactive ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff; width: 8
             background: Item { }
             contentItem: Rectangle { implicitWidth: 6; radius: 3
                 color: homeScroll.pressed ? "#87998C" : "#B8C7BC" }
         }
         Column {
             id: contentColumn
-            x: 10; y: 8; width: parent.width - 20; spacing: 18
+            x: 10; y: 8; width: parent.width - 20; spacing: home.cardGap
 
             Rectangle {
-                width: parent.width; height: downloads.ready ? 306 : 160
+                id: mediaImport; objectName: "homeMediaImport"
+                width: parent.width; height: Math.max(home.height < 600 ? 112 : 128, heroContent.y + heroContent.height + 12)
                 radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
                 HomeAmbience { anchors.fill: parent; area: "hero" }
                 Image {
-                    x: 8; y: 7; width: 116; height: 116
+                    id: heroImage; x: 8; y: 8; width: home.height < 600 ? 96 : 104; height: width
                     source: "../assets/doraemon-reading.png"
                     fillMode: Image.PreserveAspectFit; smooth: true
                 }
                 Column {
-                    x: 133; y: 18; width: parent.width - 155; spacing: 10
+                    id: heroContent
+                    x: heroImage.x + heroImage.width + 18; y: home.height < 600 ? 10 : 14
+                    width: parent.width - x - 20; spacing: home.height < 600 ? 6 : 8
                     Text { text: "添加音视频"; color: home.ink; font.pixelSize: 18
                         font.family: "Microsoft YaHei UI"; font.weight: Font.DemiBold }
                     RowLayout {
@@ -80,7 +102,7 @@ Item {
                         AppButton { text: "新建作文"; onClicked: home.newDraft() }
                     }
                     Row { spacing: 10
-                        AppButton { text: "代理与节点设置"; flat: true; height: 25; onClicked: home.openSettings() }
+                        AppButton { text: "代理与节点设置"; flat: true; height: home.height < 600 ? 21 : 23; onClicked: home.openSettings() }
                         Text { anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 11; color: home.muted
                             text: settings.values.youtube_auto_node ? "YouTube 自动选节点 · 国内来源直连" : "YouTube 使用代理 · 国内来源直连" }
                     }
@@ -103,10 +125,10 @@ Item {
                             width: parent.width - 132; spacing: 6
                             Text { text: downloads.title; width: parent.width; elide: Text.ElideRight
                                 color: home.ink; font.pixelSize: 14; font.weight: Font.DemiBold }
-                            Row { spacing: 10
-                                AppCombo { id: downloadFormat; width: 280; height: 34
+                            RowLayout { width: parent.width; spacing: 10
+                                AppCombo { id: downloadFormat; Layout.fillWidth: true; height: 34
                                     model: downloads.formats; textRole: "label" }
-                                Text { anchors.verticalCenter: parent.verticalCenter
+                                Text { Layout.maximumWidth: 90; elide: Text.ElideRight
                                     text: downloadFormat.currentIndex >= 0 && downloads.formats.length > downloadFormat.currentIndex
                                           ? downloads.formats[downloadFormat.currentIndex].sizeLabel : ""
                                     color: home.muted; font.pixelSize: 12 }
@@ -129,40 +151,89 @@ Item {
                     width: parent.width * downloads.progress; height: 3; color: home.themeAccent }
             }
 
+            Rectangle {
+                id: recordingCard; objectName: "homeRecordingCard"
+                width: parent.width; height: home.height < 600 ? 92 : 96; radius: 12; color: settings.palette.surface
+                border.color: study.recorder.active ? home.themeAccent : "#DFE7E1"
+                RowLayout {
+                    anchors.fill: parent; anchors.margins: home.height < 600 ? 12 : 14; spacing: 16
+                    Rectangle { width: 44; height: 44; radius: 12; color: settings.palette.selection
+                        Row { anchors.centerIn: parent; spacing: 3
+                            Repeater { model: [10,22,15,28,12]
+                                delegate: Rectangle { required property int modelData; width: 3; radius: 1.5
+                                    height: study.recorder.active ? Math.max(6,modelData*(.3+Math.sqrt(study.recorder.level))) : modelData
+                                    color: home.themeAccent; anchors.verticalCenter: parent.verticalCenter }
+                            }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true; spacing: 4
+                        Text { text: study.recorder.active ? "正在录制  " + home.clock(study.recorder.seconds*1000) : "录制电脑声音"
+                            color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold }
+                        Text { text: study.recorder.active ? "播放结束后停止，也可按 Ctrl + Shift + R。"
+                                         : study.recorder.busy ? study.recorder.status : "把正在播放的听力带进句间，停止后试听并归档。"
+                            color: home.muted; font.pixelSize: 12
+                            Layout.fillWidth: true; elide: Text.ElideRight }
+                        RowLayout { spacing: 8
+                            AppButton { objectName: "homeRecordingSettings"; text: "录制设置"; flat: true; height: 25
+                                onClicked: home.recordingSettings() }
+                            AppButton { objectName: "homeRecordingPending"; visible: study.recorder.pending.length>0 || !!study.recorder.review.duration
+                                text: "暂存录音 · " + study.recorder.pending.length; flat: true; height: 25
+                                enabled: !study.recorder.busy; onClicked: home.reviewRecording() }
+                        }
+                    }
+                    AppButton { objectName: "homeRecordAudio"; text: study.recorder.state==="stopping" ? "保存中…" : study.recorder.active ? "停止录制"
+                                                : study.recorder.busy ? "处理中…" : "开始录制"; primary: true; implicitHeight: 40
+                        enabled: study.recorder.active ? study.recorder.state!=="stopping" : !study.recorder.busy && !study.busy && !study.enriching
+                        onClicked: home.recordAudio() }
+                }
+            }
             Flow {
-                width: parent.width; spacing: 18
+                id: recentFlow
+                property bool sideBySide: width >= 560
+                width: parent.width; spacing: home.cardGap
                 Column {
-                    width: parent.width >= 720 ? Math.floor((parent.width - 18) * 0.63) : parent.width
-                    spacing: 18
+                    width: recentFlow.sideBySide ? Math.floor((parent.width - home.cardGap) * 0.63) : parent.width
+                    spacing: home.cardGap
                     Rectangle {
-                        width: parent.width; height: 245; radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
+                        id: videoCard; objectName: "homeVideoCard"
+                        width: parent.width; height: home.videoHeight; radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
                         HomeAmbience { anchors.fill: parent; area: "video" }
                         Text { x: 18; y: 15; text: "最近视频"; color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold }
                         AppButton { anchors.right: parent.right; anchors.rightMargin: 16; y: 8
+                            objectName: "homeAllVideos"
                             text: "查看全部"; flat: true; onClicked: home.openLibrary() }
                         Row {
-                            x: 18; y: 51; spacing: 12
+                            id: videoRow
+                            x: 18; y: 44; width: parent.width - 36; height: parent.height - 54; spacing: 12
                             Repeater {
                                 model: home.recentMedia(true)
                                 delegate: Rectangle {
                                     required property var modelData
-                                    width: Math.min(175, (home.width >= 720 ? (home.width - 250) * 0.63 : home.width - 80) / 3)
-                                    height: 174; color: "transparent"
+                                    required property int index
+                                    objectName: "homeRecentVideo_" + index
+                                    width: Math.min(175, (videoRow.width - 24) / 3)
+                                    height: videoRow.height; color: "transparent"
                                     Rectangle {
-                                        width: parent.width; height: 112; radius: 7; color: "#E8EDE9"; clip: true
+                                        id: thumbnail
+                                        width: parent.width; height: Math.max(40,Math.min(112,width*.64,videoRow.height-(home.compact ? 38 : 60)))
+                                        radius: 7; color: "#E8EDE9"; clip: true
                                         Image { anchors.fill: parent; source: modelData.coverUrl
                                             fillMode: Image.PreserveAspectCrop; visible: status === Image.Ready }
                                         Text { anchors.centerIn: parent; text: "▶"; color: "#A6B1A9"
                                             font.pixelSize: 27; visible: parent.children[0].status !== Image.Ready }
                                     }
-                                    Text { y: 117; width: parent.width; text: modelData.title; elide: Text.ElideRight
+                                    Text { y: thumbnail.height+5; width: parent.width; text: modelData.title; elide: Text.ElideRight
                                         color: home.ink; font.pixelSize: 12 }
-                                    Text { y: 137; text: modelData.available ? modelData.state : "源文件已丢失"
+                                    Text { visible: !home.compact; y: thumbnail.height+25; text: modelData.available ? modelData.state : "源文件已丢失"
                                         color: modelData.available ? home.muted : "#B64052"; font.pixelSize: 11 }
-                                    Rectangle { y: 159; width: parent.width; height: 3; radius: 2; color: "#E8ECE9"
+                                    Rectangle { y: thumbnail.height+(home.compact ? 28 : 48); width: parent.width; height: 3; radius: 2; color: "#E8ECE9"
                                         Rectangle { width: parent.width * modelData.progress; height: parent.height
                                             radius: 2; color: home.themeAccent } }
                                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        hoverEnabled: true
+                                        ToolTip.visible: containsMouse
+                                        ToolTip.text: modelData.title+" · "+(modelData.available ? modelData.state : "源文件已丢失")
                                         enabled: modelData.available; onClicked: home.openProject(modelData.path) }
                                 }
                             }
@@ -171,27 +242,31 @@ Item {
                             text: "还没有视频项目"; color: home.muted; font.pixelSize: 13 }
                     }
                     Rectangle {
-                        width: parent.width; height: 226; radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
+                        objectName: "homeAudioCard"
+                        width: parent.width; height: home.audioHeight; radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
                         HomeAmbience { anchors.fill: parent; area: "audio" }
                         Text { x: 18; y: 15; text: "最近音频"; color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold }
                         AppButton { anchors.right: parent.right; anchors.rightMargin: 16; y: 8
+                            objectName: "homeAllAudio"
                             text: "查看全部"; flat: true; onClicked: home.openLibrary() }
                         Column {
-                            x: 18; y: 50; width: parent.width - 36; spacing: 6
+                            x: 18; y: 44; width: parent.width - 36; spacing: 6
                             Repeater {
                                 model: home.recentMedia(false)
                                 delegate: Rectangle {
                                     required property var modelData
-                                    width: parent.width; height: 48; radius: 7
+                                    required property int index
+                                    objectName: "homeRecentAudio_" + index
+                                    width: parent.width; height: home.audioRowHeight; radius: 7
                                     color: audioHover.containsMouse ? "#F5F7F5" : "#FAFBFA"
                                     Text { x: 10; anchors.verticalCenter: parent.verticalCenter; text: "♫"
                                         color: home.themeAccent; font.pixelSize: 19 }
-                                    Text { x: 40; y: 6; width: parent.width - 140; text: modelData.title
+                                    Text { x: 40; y: home.compact ? 3 : 6; width: parent.width - 140; text: modelData.title
                                         elide: Text.ElideRight; color: home.ink; font.pixelSize: 12 }
-                                    Text { anchors.right: parent.right; anchors.rightMargin: 10; y: 6
+                                    Text { anchors.right: parent.right; anchors.rightMargin: 10; y: home.compact ? 3 : 6
                                         text: modelData.available ? modelData.state : "文件缺失"
                                         color: modelData.available ? home.muted : "#B64052"; font.pixelSize: 11 }
-                                    Rectangle { x: 40; y: 37; width: parent.width - 50; height: 3; radius: 2; color: "#E8ECE9"
+                                    Rectangle { x: 40; y: parent.height-11; width: parent.width - 50; height: 3; radius: 2; color: "#E8ECE9"
                                         Rectangle { width: parent.width * modelData.progress; height: parent.height
                                             radius: 2; color: home.themeAccent } }
                                     MouseArea { id: audioHover; anchors.fill: parent; hoverEnabled: true
@@ -205,11 +280,13 @@ Item {
                     }
                 }
                 Rectangle {
-                    width: parent.width >= 720 ? parent.width - Math.floor((parent.width - 18) * 0.63) - 18 : parent.width
-                    height: 489; radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
+                    objectName: "homeWritingCard"
+                    width: recentFlow.sideBySide ? parent.width - Math.floor((parent.width - home.cardGap) * 0.63) - home.cardGap : parent.width
+                    height: home.recentHeight; radius: 12; color: "#FFFFFF"; border.color: "#E2E6E2"
                     HomeAmbience { anchors.fill: parent; area: "writing" }
                     Text { x: 18; y: 15; text: "最近作文"; color: home.ink; font.pixelSize: 16; font.weight: Font.DemiBold }
                     AppButton { anchors.right: parent.right; anchors.rightMargin: 16; y: 8
+                        objectName: "homeAllWriting"
                         text: "查看全部"; flat: true; onClicked: home.openWriting() }
                     Column {
                         x: 14; y: 53; width: parent.width - 28; spacing: 8
@@ -217,14 +294,16 @@ Item {
                             model: home.recentDrafts()
                             delegate: Rectangle {
                                 required property var modelData
-                                width: parent.width; height: 79; radius: 8
+                                required property int index
+                                objectName: "homeRecentDraft_" + index
+                                width: parent.width; height: home.draftRowHeight; radius: 8
                                 color: draftHover.containsMouse ? "#F6F7F6" : "#FAFBFA"
                                 border.color: "#EDF0ED"
-                                Text { x: 12; y: 12; width: parent.width - 24; text: modelData.title
+                                Text { x: 12; y: home.compact ? 9 : 12; width: parent.width - 24; text: modelData.title
                                     elide: Text.ElideRight; color: home.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
-                                Text { x: 12; y: 38; text: modelData.language === "en" ? "英语" : "日语"
+                                Text { x: 12; y: home.compact ? 32 : 38; text: modelData.language === "en" ? "英语" : "日语"
                                     color: home.muted; font.pixelSize: 11 }
-                                Text { anchors.right: parent.right; anchors.rightMargin: 12; y: 38
+                                Text { anchors.right: parent.right; anchors.rightMargin: 12; y: home.compact ? 32 : 38
                                     text: modelData.updatedLabel; color: home.muted; font.pixelSize: 11 }
                                 MouseArea { id: draftHover; anchors.fill: parent; hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor; onClicked: home.openDraft(modelData.path) }

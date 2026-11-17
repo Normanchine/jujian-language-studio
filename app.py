@@ -54,6 +54,9 @@ def use_windows_window_effects(window) -> None:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--recording-job":
+        from recording_job import main as recording_main
+        return recording_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "--youtube-check":
         from youtube_check import main as youtube_main
         return youtube_main()
@@ -120,7 +123,16 @@ def main() -> int:
     if not engine.rootObjects():
         return 1
     window = engine.rootObjects()[0]
+    # Size the initial window in logical pixels, including high-DPI displays.
+    # Keep normal startup inside the work area without requiring maximization.
+    available = window.screen().availableGeometry()
+    from PySide6.QtCore import QSize
+    limit = QSize(max(320, available.width() - 32), max(320, available.height() - 32))
+    window.setMinimumSize(QSize(min(window.minimumWidth(), limit.width()),
+                               min(window.minimumHeight(), limit.height())))
+    window.resize(min(window.width(), limit.width()), min(window.height(), limit.height()))
     window_actions.attach(window, QSystemTrayIcon.isSystemTrayAvailable())
+    bridge.recorder.reviewReady.connect(window_actions.restore)
     use_windows_window_effects(window)
     window.show()
     milestones["window_seconds"] = round(perf_counter() - STARTED, 3)
@@ -137,12 +149,17 @@ def main() -> int:
             pass
 
     QTimer.singleShot(0, record_startup)
+    QTimer.singleShot(250, bridge.preparePlayback)
     if QSystemTrayIcon.isSystemTrayAvailable():
         tray = QSystemTrayIcon(app.windowIcon(), app)
         tray.setToolTip("句间")
         menu = QMenu()
 
         menu.addAction("打开句间", window_actions.restore)
+        stop_recording = menu.addAction("停止录音并打开句间")
+        stop_recording.triggered.connect(lambda: (bridge.recorder.stop(), window_actions.restore()))
+        stop_recording.setEnabled(False)
+        bridge.recorder.changed.connect(lambda: stop_recording.setEnabled(bridge.recorder.active))
         menu.addSeparator()
         menu.addAction("退出句间", window_actions.exit)
         tray.setContextMenu(menu)

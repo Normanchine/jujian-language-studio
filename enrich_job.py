@@ -48,7 +48,7 @@ TRANSLATION_SCHEMA = {
 }
 
 
-def validate_analysis(raw: object, source: str, language: str = "ja") -> dict:
+def validate_analysis(raw: object, source: str, language: str = "ja", *, source_tokens=None) -> dict:
     if not isinstance(raw, dict):
         raise ValueError("模型结果不是对象")
     grammar = str(raw.get("grammar", "")).strip()[:140]
@@ -56,7 +56,9 @@ def validate_analysis(raw: object, source: str, language: str = "ja") -> dict:
     entries = raw.get("vocabulary", [])
     if not isinstance(entries, list):
         entries = []
-    content_tokens = [token["text"] for token in display_tokens(source, [], language)
+    if source_tokens is None:
+        source_tokens = display_tokens(source, [], language)
+    content_tokens = [token["text"] for token in source_tokens
                       if language == "en" or token["category"] in {"noun", "verb", "adjective", "adverb"}]
     for item in entries[:4]:
         if not isinstance(item, dict):
